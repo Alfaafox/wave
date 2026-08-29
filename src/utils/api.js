@@ -1,4 +1,4 @@
-export const SERVER_URL = 'http://192.168.1.7:3000';
+export const SERVER_URL = 'http://13.232.16.85:3000';
 
 async function request(path, options = {}) {
   const controller = new AbortController();
