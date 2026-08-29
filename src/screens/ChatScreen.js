@@ -1,205 +1,118 @@
-// src/screens/ChatScreen.js
-// The main group chat: shows message history, listens for new messages in
-// real time over Socket.io, and lets you send your own.
-
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import {
-  View,
-  Text,
-  FlatList,
-  TextInput,
-  TouchableOpacity,
-  StyleSheet,
-  KeyboardAvoidingView,
-  Platform,
-  SafeAreaView,
+  View, Text, FlatList, TextInput, TouchableOpacity, StyleSheet,
+  KeyboardAvoidingView, Platform
 } from 'react-native';
-import { fetchMessages } from '../api';
-import { createSocket } from '../socket';
+import { getMessages } from '../utils/api';
+import { connectSocket } from '../utils/socket';
 
-export default function ChatScreen({ token, username, onLogout }) {
+export default function ChatScreen({ token, currentUser, conversationId, otherUser, onBack }) {
   const [messages, setMessages] = useState([]);
-  const [draft, setDraft] = useState('');
-  const [connected, setConnected] = useState(false);
-  const socketRef = useRef(null);
+  const [input, setInput] = useState('');
   const listRef = useRef(null);
+  const socketRef = useRef(null);
 
   useEffect(() => {
     let isMounted = true;
 
-    // 1. Load recent history over plain REST.
-    fetchMessages(token)
-      .then((history) => {
-        if (isMounted) setMessages(history);
-      })
-      .catch((err) => console.warn('Failed to load history:', err.message));
+    getMessages(token, conversationId).then((data) => {
+      if (isMounted) setMessages(data);
+    });
 
-    // 2. Open a real-time connection for anything sent from now on.
-    const socket = createSocket(token);
+    const socket = connectSocket(token);
     socketRef.current = socket;
+    socket.emit('joinConversation', conversationId);
 
-    socket.on('connect', () => setConnected(true));
-    socket.on('disconnect', () => setConnected(false));
+    const handleMessage = (msg) => {
+      if (msg.conversationId === conversationId) {
+        setMessages((prev) => [...prev, msg]);
+      }
+    };
 
-    socket.on('message', (msg) => {
-      setMessages((prev) => [...prev, msg]);
-    });
-
-    socket.on('system', (text) => {
-      setMessages((prev) => [
-        ...prev,
-        { id: `system-${Date.now()}`, system: true, content: text },
-      ]);
-    });
+    socket.on('message', handleMessage);
 
     return () => {
       isMounted = false;
-      socket.disconnect();
+      socket.off('message', handleMessage);
     };
-  }, [token]);
+  }, [conversationId, token]);
 
-  function handleSend() {
-    const text = draft.trim();
-    if (!text || !socketRef.current) return;
-    socketRef.current.emit('message', text);
-    setDraft('');
-  }
-
-  function renderItem({ item }) {
-    if (item.system) {
-      return <Text style={styles.systemText}>{item.content}</Text>;
-    }
-    const isMe = item.username === username;
-    return (
-      <View
-        style={[styles.bubble, isMe ? styles.bubbleMine : styles.bubbleTheirs]}
-      >
-        {!isMe && <Text style={styles.senderName}>{item.username}</Text>}
-        <Text style={isMe ? styles.textMine : styles.textTheirs}>
-          {item.content}
-        </Text>
-      </View>
-    );
-  }
+  const sendMessage = () => {
+    if (!input.trim() || !socketRef.current) return;
+    socketRef.current.emit('message', { conversationId, content: input.trim() });
+    setInput('');
+  };
 
   return (
-    <SafeAreaView style={styles.container}>
+    <KeyboardAvoidingView
+      style={{ flex: 1, backgroundColor: '#ECE5DD' }}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      keyboardVerticalOffset={90}
+    >
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Group chat</Text>
-        <View style={styles.headerRight}>
-          <View
-            style={[
-              styles.statusDot,
-              { backgroundColor: connected ? '#22c55e' : '#ef4444' },
-            ]}
-          />
-          <TouchableOpacity onPress={onLogout}>
-            <Text style={styles.logout}>Log out</Text>
-          </TouchableOpacity>
-        </View>
+        <TouchableOpacity onPress={onBack}>
+          <Text style={styles.backArrow}>{'<'}</Text>
+        </TouchableOpacity>
+        <Text style={styles.headerTitle}>{otherUser?.name || 'Chat'}</Text>
       </View>
 
       <FlatList
         ref={listRef}
         data={messages}
-        keyExtractor={(item, index) =>
-          String(item.id !== undefined ? item.id : index)
-        }
-        renderItem={renderItem}
-        contentContainerStyle={styles.list}
-        onContentSizeChange={() => {
-          if (listRef.current) listRef.current.scrollToEnd({ animated: true });
+        keyExtractor={(item) => String(item.id)}
+        contentContainerStyle={{ padding: 12 }}
+        onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: true })}
+        renderItem={({ item }) => {
+          const isMine = item.user_id === currentUser.id;
+          return (
+            <View style={[styles.bubble, isMine ? styles.bubbleMine : styles.bubbleTheirs]}>
+              <Text style={styles.bubbleText}>{item.content}</Text>
+              <Text style={styles.bubbleTime}>
+                {new Date(item.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </Text>
+            </View>
+          );
         }}
       />
 
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={80}
-      >
-        <View style={styles.inputRow}>
-          <TextInput
-            style={styles.input}
-            placeholder="Type a message..."
-            value={draft}
-            onChangeText={setDraft}
-            onSubmitEditing={handleSend}
-            returnKeyType="send"
-          />
-          <TouchableOpacity style={styles.sendButton} onPress={handleSend}>
-            <Text style={styles.sendButtonText}>Send</Text>
-          </TouchableOpacity>
-        </View>
-      </KeyboardAvoidingView>
-    </SafeAreaView>
+      <View style={styles.inputRow}>
+        <TextInput
+          style={styles.input}
+          placeholder="Type a message"
+          value={input}
+          onChangeText={setInput}
+          multiline
+        />
+        <TouchableOpacity style={styles.sendButton} onPress={sendMessage}>
+          <Text style={{ color: '#fff', fontWeight: '600' }}>Send</Text>
+        </TouchableOpacity>
+      </View>
+    </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#fff' },
   header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#eee',
+    flexDirection: 'row', alignItems: 'center', padding: 16, paddingTop: 50,
+    backgroundColor: '#075E54'
   },
-  headerTitle: { fontSize: 18, fontWeight: '600' },
-  headerRight: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  statusDot: { width: 8, height: 8, borderRadius: 4 },
-  logout: { color: '#2563eb', fontSize: 14 },
-  list: { padding: 12, gap: 8 },
-  bubble: {
-    maxWidth: '80%',
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    marginVertical: 4,
-  },
-  bubbleMine: {
-    backgroundColor: '#2563eb',
-    alignSelf: 'flex-end',
-  },
-  bubbleTheirs: {
-    backgroundColor: '#f1f5f9',
-    alignSelf: 'flex-start',
-  },
-  senderName: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#64748b',
-    marginBottom: 2,
-  },
-  textMine: { color: '#fff', fontSize: 15 },
-  textTheirs: { color: '#0f172a', fontSize: 15 },
-  systemText: {
-    textAlign: 'center',
-    color: '#94a3b8',
-    fontSize: 12,
-    marginVertical: 6,
-  },
+  backArrow: { color: '#fff', fontSize: 22, marginRight: 14 },
+  headerTitle: { color: '#fff', fontSize: 18, fontWeight: '600' },
+  bubble: { maxWidth: '75%', borderRadius: 10, padding: 10, marginBottom: 8 },
+  bubbleMine: { backgroundColor: '#DCF8C6', alignSelf: 'flex-end' },
+  bubbleTheirs: { backgroundColor: '#fff', alignSelf: 'flex-start' },
+  bubbleText: { fontSize: 15 },
+  bubbleTime: { fontSize: 10, color: '#888', marginTop: 4, textAlign: 'right' },
   inputRow: {
-    flexDirection: 'row',
-    padding: 12,
-    borderTopWidth: 1,
-    borderTopColor: '#eee',
-    gap: 8,
+    flexDirection: 'row', padding: 10, backgroundColor: '#fff',
+    alignItems: 'flex-end', borderTopWidth: 1, borderTopColor: '#eee'
   },
   input: {
-    flex: 1,
-    borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 20,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    fontSize: 15,
+    flex: 1, borderWidth: 1, borderColor: '#ddd', borderRadius: 20,
+    paddingHorizontal: 16, paddingVertical: 10, marginRight: 8, maxHeight: 100
   },
   sendButton: {
-    backgroundColor: '#2563eb',
-    borderRadius: 20,
-    paddingHorizontal: 18,
-    justifyContent: 'center',
-  },
-  sendButtonText: { color: '#fff', fontWeight: '600' },
+    backgroundColor: '#075E54', borderRadius: 20, paddingHorizontal: 18,
+    paddingVertical: 12, justifyContent: 'center'
+  }
 });
