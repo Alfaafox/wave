@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, ActivityIndicator } from 'react-native';
-import { login } from '../utils/api';
+import { login, SERVER_URL } from '../utils/api';
 
 export default function LoginScreen({ onLoggedIn, goToSignup }) {
   const [email, setEmail] = useState('');
@@ -15,11 +15,11 @@ export default function LoginScreen({ onLoggedIn, goToSignup }) {
     setLoading(true);
     try {
       const data = await login(email.trim(), password);
+      setLoading(false);
       onLoggedIn(data.token, data.user);
     } catch (err) {
-      Alert.alert('Login failed', err.message);
-    } finally {
       setLoading(false);
+      Alert.alert('Login failed', `${err.message}\n\nTrying to reach: ${SERVER_URL}`);
     }
   };
 
@@ -27,6 +27,7 @@ export default function LoginScreen({ onLoggedIn, goToSignup }) {
     <View style={styles.container}>
       <Text style={styles.title}>Wave</Text>
       <Text style={styles.subtitle}>Log in to continue</Text>
+      <Text style={styles.debug}>Server: {SERVER_URL}</Text>
 
       <TextInput
         style={styles.input}
@@ -58,7 +59,8 @@ export default function LoginScreen({ onLoggedIn, goToSignup }) {
 const styles = StyleSheet.create({
   container: { flex: 1, justifyContent: 'center', padding: 24, backgroundColor: '#fff' },
   title: { fontSize: 36, fontWeight: 'bold', textAlign: 'center', color: '#075E54' },
-  subtitle: { fontSize: 16, textAlign: 'center', color: '#666', marginBottom: 32 },
+  subtitle: { fontSize: 16, textAlign: 'center', color: '#666', marginBottom: 8 },
+  debug: { fontSize: 11, textAlign: 'center', color: '#aaa', marginBottom: 24 },
   input: {
     borderWidth: 1, borderColor: '#ddd', borderRadius: 10, padding: 14,
     marginBottom: 14, fontSize: 16
