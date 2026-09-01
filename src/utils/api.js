@@ -2,7 +2,7 @@ export const SERVER_URL = 'http://13.232.16.85:3000';
 
 async function request(path, options = {}) {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 8000); // 8 second timeout
+  const timeoutId = setTimeout(() => controller.abort(), 15000);
 
   try {
     const res = await fetch(`${SERVER_URL}${path}`, {
@@ -15,18 +15,16 @@ async function request(path, options = {}) {
     });
 
     clearTimeout(timeoutId);
-
     const data = await res.json().catch(() => ({}));
 
     if (!res.ok) {
       throw new Error(data.error || 'Something went wrong');
     }
-
     return data;
   } catch (err) {
     clearTimeout(timeoutId);
     if (err.name === 'AbortError') {
-      throw new Error('Request timed out - could not reach the server. Check your WiFi connection.');
+      throw new Error('Request timed out - check your internet connection.');
     }
     throw err;
   }
@@ -58,6 +56,14 @@ export function startConversation(token, phoneNumber) {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}` },
     body: JSON.stringify({ phoneNumber })
+  });
+}
+
+export function createGroup(token, name, phoneNumbers) {
+  return request('/conversations/group', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ name, phoneNumbers })
   });
 }
 

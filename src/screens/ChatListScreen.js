@@ -1,16 +1,21 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View, Text, FlatList, TouchableOpacity, StyleSheet,
   TextInput, Modal, Alert, RefreshControl
 } from 'react-native';
-import { getConversations, startConversation } from '../utils/api';
+import { getConversations, startConversation, createGroup } from '../utils/api';
+import { connectSocket } from '../utils/socket';
 
-export default function ChatListScreen({ token, currentUser, onOpenChat, onLogout }) {
+export default function ChatListScreen({ token, currentUser, onOpenChat, onLogout, onOpenProfile }) {
   const [conversations, setConversations] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
+  const [mode, setMode] = useState('chat'); // 'chat' | 'group'
   const [phoneInput, setPhoneInput] = useState('');
+  const [groupName, setGroupName] = useState('');
+  const [groupPhones, setGroupPhones] = useState('');
   const [starting, setStarting] = useState(false);
+  const [onlineIds, setOnlineIds] = useState({});
 
   const loadConversations = useCallback(async () => {
     try {
@@ -23,12 +28,31 @@ export default function ChatListScreen({ token, currentUser, onOpenChat, onLogou
 
   useEffect(() => {
     loadConversations();
-  }, [loadConversations]);
+    const socket = connectSocket(token);
+    const handlePresence = ({ userId, online }) => {
+      setOnlineIds((prev) => ({ ...prev, [userId]: online }));
+    };
+    socket.on('presence', handlePresence);
+    return () => socket.off('presence', handlePresence);
+  }, [loadConversations, token]);
 
   const handleRefresh = async () => {
     setRefreshing(true);
     await loadConversations();
     setRefreshing(false);
+  };
+
+  const openStartChatModal = () => {
+    setMode('chat');
+    setPhoneInput('');
+    setModalVisible(true);
+  };
+
+  const openGroupModal = () => {
+    setMode('group');
+    setGroupName('');
+    setGroupPhones('');
+    setModalVisible(true);
   };
 
   const handleStartChat = async () => {
@@ -37,11 +61,29 @@ export default function ChatListScreen({ token, currentUser, onOpenChat, onLogou
     try {
       const result = await startConversation(token, phoneInput.trim());
       setModalVisible(false);
-      setPhoneInput('');
       await loadConversations();
-      onOpenChat(result.conversationId, result.with);
+      onOpenChat({ conversationId: result.conversationId, otherUser: result.with, isGroup: false });
     } catch (err) {
       Alert.alert('Could not start chat', err.message);
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  const handleCreateGroup = async () => {
+    if (!groupName.trim() || !groupPhones.trim()) return;
+    const phones = groupPhones.split(',').map((p) => p.trim()).filter(Boolean);
+    setStarting(true);
+    try {
+      const result = await createGroup(token, groupName.trim(), phones);
+      setModalVisible(false);
+      await loadConversations();
+      if (result.notFound?.length) {
+        Alert.alert('Some numbers not found', `Not registered: ${result.notFound.join(', ')}`);
+      }
+      onOpenChat({ conversationId: result.conversationId, isGroup: true, groupName: result.name });
+    } catch (err) {
+      Alert.alert('Could not create group', err.message);
     } finally {
       setStarting(false);
     }
@@ -51,9 +93,14 @@ export default function ChatListScreen({ token, currentUser, onOpenChat, onLogou
     <View style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Wave</Text>
-        <TouchableOpacity onPress={onLogout}>
-          <Text style={styles.logout}>Log out</Text>
-        </TouchableOpacity>
+        <View style={{ flexDirection: 'row' }}>
+          <TouchableOpacity onPress={onOpenProfile} style={{ marginRight: 16 }}>
+            <Text style={styles.headerAction}>Profile</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={onLogout}>
+            <Text style={styles.headerAction}>Log out</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       <FlatList
@@ -63,47 +110,94 @@ export default function ChatListScreen({ token, currentUser, onOpenChat, onLogou
         ListEmptyComponent={
           <Text style={styles.empty}>No chats yet. Tap + to start one.</Text>
         }
-        renderItem={({ item }) => (
-          <TouchableOpacity
-            style={styles.row}
-            onPress={() => onOpenChat(item.id, item.with)}
-          >
-            <View style={styles.avatar}>
-              <Text style={styles.avatarText}>
-                {(item.with?.name || '?').charAt(0).toUpperCase()}
-              </Text>
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.rowName}>{item.with?.name || 'Group chat'}</Text>
-              <Text style={styles.rowSub}>{item.with?.phone_number || ''}</Text>
-            </View>
-          </TouchableOpacity>
-        )}
+        renderItem={({ item }) => {
+          const isGroup = !!item.is_group;
+          const title = isGroup ? item.name : item.with?.name;
+          const subtitle = isGroup
+            ? `${(item.members?.length || 0) + 1} members`
+            : item.with?.phone_number || '';
+          const online = !isGroup && item.with && onlineIds[item.with.id];
+
+          return (
+            <TouchableOpacity
+              style={styles.row}
+              onPress={() => onOpenChat({
+                conversationId: item.id,
+                otherUser: item.with,
+                isGroup,
+                groupName: item.name
+              })}
+            >
+              <View>
+                <View style={styles.avatar}>
+                  <Text style={styles.avatarText}>{(title || '?').charAt(0).toUpperCase()}</Text>
+                </View>
+                {online && <View style={styles.onlineDot} />}
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.rowName}>{title || 'Chat'}</Text>
+                <Text style={styles.rowSub}>{subtitle}</Text>
+              </View>
+            </TouchableOpacity>
+          );
+        }}
       />
 
-      <TouchableOpacity style={styles.fab} onPress={() => setModalVisible(true)}>
+      <TouchableOpacity style={styles.fabSecondary} onPress={openGroupModal}>
+        <Text style={styles.fabSecondaryText}>Group</Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity style={styles.fab} onPress={openStartChatModal}>
         <Text style={styles.fabText}>+</Text>
       </TouchableOpacity>
 
       <Modal visible={modalVisible} transparent animationType="slide">
         <View style={styles.modalOverlay}>
           <View style={styles.modalBox}>
-            <Text style={styles.modalTitle}>Start a new chat</Text>
-            <TextInput
-              style={styles.modalInput}
-              placeholder="Enter phone number (e.g. +911234567890)"
-              keyboardType="phone-pad"
-              value={phoneInput}
-              onChangeText={setPhoneInput}
-            />
-            <View style={styles.modalButtons}>
-              <TouchableOpacity onPress={() => setModalVisible(false)} style={styles.modalCancel}>
-                <Text>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={handleStartChat} style={styles.modalConfirm} disabled={starting}>
-                <Text style={{ color: '#fff' }}>{starting ? 'Starting...' : 'Start'}</Text>
-              </TouchableOpacity>
-            </View>
+            {mode === 'chat' ? (
+              <>
+                <Text style={styles.modalTitle}>Start a new chat</Text>
+                <TextInput
+                  style={styles.modalInput}
+                  placeholder="Enter phone number (e.g. +911234567890)"
+                  keyboardType="phone-pad"
+                  value={phoneInput}
+                  onChangeText={setPhoneInput}
+                />
+                <View style={styles.modalButtons}>
+                  <TouchableOpacity onPress={() => setModalVisible(false)} style={styles.modalCancel}>
+                    <Text>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={handleStartChat} style={styles.modalConfirm} disabled={starting}>
+                    <Text style={{ color: '#fff' }}>{starting ? 'Starting...' : 'Start'}</Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            ) : (
+              <>
+                <Text style={styles.modalTitle}>Create a group</Text>
+                <TextInput
+                  style={styles.modalInput}
+                  placeholder="Group name"
+                  value={groupName}
+                  onChangeText={setGroupName}
+                />
+                <TextInput
+                  style={[styles.modalInput, { marginTop: 10 }]}
+                  placeholder="Phone numbers, comma separated"
+                  value={groupPhones}
+                  onChangeText={setGroupPhones}
+                />
+                <View style={styles.modalButtons}>
+                  <TouchableOpacity onPress={() => setModalVisible(false)} style={styles.modalCancel}>
+                    <Text>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={handleCreateGroup} style={styles.modalConfirm} disabled={starting}>
+                    <Text style={{ color: '#fff' }}>{starting ? 'Creating...' : 'Create'}</Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            )}
           </View>
         </View>
       </Modal>
@@ -118,7 +212,7 @@ const styles = StyleSheet.create({
     padding: 16, paddingTop: 50, backgroundColor: '#075E54'
   },
   headerTitle: { fontSize: 22, fontWeight: 'bold', color: '#fff' },
-  logout: { color: '#fff', fontSize: 14 },
+  headerAction: { color: '#fff', fontSize: 14 },
   empty: { textAlign: 'center', marginTop: 60, color: '#999' },
   row: {
     flexDirection: 'row', alignItems: 'center', padding: 14,
@@ -129,6 +223,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center', alignItems: 'center', marginRight: 12
   },
   avatarText: { color: '#fff', fontSize: 18, fontWeight: '600' },
+  onlineDot: {
+    position: 'absolute', bottom: 0, right: 10, width: 12, height: 12,
+    borderRadius: 6, backgroundColor: '#25D366', borderWidth: 2, borderColor: '#fff'
+  },
   rowName: { fontSize: 16, fontWeight: '600' },
   rowSub: { fontSize: 13, color: '#888', marginTop: 2 },
   fab: {
@@ -137,6 +235,11 @@ const styles = StyleSheet.create({
     alignItems: 'center', elevation: 4
   },
   fabText: { color: '#fff', fontSize: 30, marginTop: -2 },
+  fabSecondary: {
+    position: 'absolute', bottom: 40, right: 96, backgroundColor: '#128C7E',
+    paddingHorizontal: 14, paddingVertical: 10, borderRadius: 20, elevation: 4
+  },
+  fabSecondaryText: { color: '#fff', fontWeight: '600', fontSize: 13 },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
   modalBox: { backgroundColor: '#fff', padding: 20, borderTopLeftRadius: 16, borderTopRightRadius: 16 },
   modalTitle: { fontSize: 18, fontWeight: '600', marginBottom: 14 },

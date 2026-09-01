@@ -7,16 +7,16 @@ import LoginScreen from './src/screens/LoginScreen';
 import SignupScreen from './src/screens/SignupScreen';
 import ChatListScreen from './src/screens/ChatListScreen';
 import ChatScreen from './src/screens/ChatScreen';
+import ProfileScreen from './src/screens/ProfileScreen';
 import { disconnectSocket } from './src/utils/socket';
 
 export default function App() {
   const [loading, setLoading] = useState(true);
-  const [screen, setScreen] = useState('login'); // login | signup | chatList | chat
+  const [screen, setScreen] = useState('login'); // login | signup | chatList | chat | profile
   const [token, setToken] = useState(null);
   const [currentUser, setCurrentUser] = useState(null);
-  const [activeConversation, setActiveConversation] = useState(null); // { id, with }
+  const [activeChat, setActiveChat] = useState(null); // { conversationId, otherUser, isGroup, groupName }
 
-  // On app start, check if we already have a saved login.
   useEffect(() => {
     (async () => {
       try {
@@ -50,8 +50,8 @@ export default function App() {
     setScreen('login');
   };
 
-  const openChat = (conversationId, otherUser) => {
-    setActiveConversation({ id: conversationId, with: otherUser });
+  const openChat = (chatInfo) => {
+    setActiveChat(chatInfo);
     setScreen('chat');
   };
 
@@ -78,15 +78,25 @@ export default function App() {
           currentUser={currentUser}
           onOpenChat={openChat}
           onLogout={handleLogout}
+          onOpenProfile={() => setScreen('profile')}
         />
       )}
-      {screen === 'chat' && (
+      {screen === 'chat' && activeChat && (
         <ChatScreen
           token={token}
           currentUser={currentUser}
-          conversationId={activeConversation.id}
-          otherUser={activeConversation.with}
+          conversationId={activeChat.conversationId}
+          otherUser={activeChat.otherUser}
+          isGroup={activeChat.isGroup}
+          groupName={activeChat.groupName}
           onBack={() => setScreen('chatList')}
+        />
+      )}
+      {screen === 'profile' && (
+        <ProfileScreen
+          currentUser={currentUser}
+          onBack={() => setScreen('chatList')}
+          onLogout={handleLogout}
         />
       )}
     </>
