@@ -1,16 +1,16 @@
-import React, { useEffect, useState, useCallback, useRef } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import {
   View, Text, FlatList, TouchableOpacity, StyleSheet,
   TextInput, Modal, Alert, RefreshControl
 } from 'react-native';
-import { getConversations, startConversation, createGroup } from '../utils/api';
+import { getConversations, startConversation, createGroup, deleteConversation } from '../utils/api';
 import { connectSocket } from '../utils/socket';
 
 export default function ChatListScreen({ token, currentUser, onOpenChat, onLogout, onOpenProfile }) {
   const [conversations, setConversations] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
-  const [mode, setMode] = useState('chat'); // 'chat' | 'group'
+  const [mode, setMode] = useState('chat');
   const [phoneInput, setPhoneInput] = useState('');
   const [groupName, setGroupName] = useState('');
   const [groupPhones, setGroupPhones] = useState('');
@@ -89,6 +89,29 @@ export default function ChatListScreen({ token, currentUser, onOpenChat, onLogou
     }
   };
 
+  const handleDeleteChat = (item) => {
+    const title = item.is_group ? item.name : item.with?.name;
+    Alert.alert(
+      'Delete chat',
+      `Remove this chat with ${title}? This only deletes it for you.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await deleteConversation(token, item.id);
+              await loadConversations();
+            } catch (err) {
+              Alert.alert('Could not delete chat', err.message);
+            }
+          }
+        }
+      ]
+    );
+  };
+
   return (
     <View style={styles.container}>
       <View style={styles.header}>
@@ -127,6 +150,7 @@ export default function ChatListScreen({ token, currentUser, onOpenChat, onLogou
                 isGroup,
                 groupName: item.name
               })}
+              onLongPress={() => handleDeleteChat(item)}
             >
               <View>
                 <View style={styles.avatar}>
@@ -142,6 +166,8 @@ export default function ChatListScreen({ token, currentUser, onOpenChat, onLogou
           );
         }}
       />
+
+      <Text style={styles.hint}>Tip: long-press a chat to delete it</Text>
 
       <TouchableOpacity style={styles.fabSecondary} onPress={openGroupModal}>
         <Text style={styles.fabSecondaryText}>Group</Text>
@@ -214,6 +240,7 @@ const styles = StyleSheet.create({
   headerTitle: { fontSize: 22, fontWeight: 'bold', color: '#fff' },
   headerAction: { color: '#fff', fontSize: 14 },
   empty: { textAlign: 'center', marginTop: 60, color: '#999' },
+  hint: { textAlign: 'center', color: '#aaa', fontSize: 11, marginBottom: 4 },
   row: {
     flexDirection: 'row', alignItems: 'center', padding: 14,
     borderBottomWidth: 1, borderBottomColor: '#eee'

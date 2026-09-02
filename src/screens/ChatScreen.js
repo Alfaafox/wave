@@ -4,6 +4,7 @@ import {
   KeyboardAvoidingView, Platform, Image, Alert
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
+import * as MediaLibrary from 'expo-media-library';
 import { getMessages } from '../utils/api';
 import { connectSocket } from '../utils/socket';
 
@@ -74,19 +75,46 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
   };
 
   const pickImage = async () => {
-    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permission.granted) {
-      Alert.alert('Permission needed', 'We need access to your photos to send images.');
-      return;
-    }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      quality: 0.5,
-      base64: true
-    });
-    if (!result.canceled && result.assets?.[0]?.base64) {
-      const dataUri = `data:image/jpeg;base64,${result.assets[0].base64}`;
+    try {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert('Permission needed', 'We need access to your photos to send images.');
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        quality: 0.5,
+        base64: true,
+        allowsEditing: false
+      });
+
+      if (result.canceled) return;
+
+      const asset = result.assets?.[0];
+      if (!asset?.base64) {
+        Alert.alert('Error', 'Could not read the selected image. Try a different one.');
+        return;
+      }
+
+      const dataUri = `data:image/jpeg;base64,${asset.base64}`;
       sendMessage(dataUri, 'image');
+    } catch (err) {
+      Alert.alert('Error picking image', err.message);
+    }
+  };
+
+  const saveImage = async (uri) => {
+    try {
+      const permission = await MediaLibrary.requestPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert('Permission needed', 'We need permission to save photos.');
+        return;
+      }
+      await MediaLibrary.saveToLibraryAsync(uri);
+      Alert.alert('Saved', 'Image saved to your gallery.');
+    } catch (err) {
+      Alert.alert('Could not save image', err.message);
     }
   };
 
@@ -123,7 +151,10 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
             <View style={[styles.bubble, isMine ? styles.bubbleMine : styles.bubbleTheirs]}>
               {isGroup && !isMine && <Text style={styles.senderName}>{item.username}</Text>}
               {item.message_type === 'image' ? (
-                <Image source={{ uri: item.content }} style={styles.messageImage} resizeMode="cover" />
+                <TouchableOpacity onLongPress={() => saveImage(item.content)}>
+                  <Image source={{ uri: item.content }} style={styles.messageImage} resizeMode="cover" />
+                  <Text style={styles.saveHint}>Long-press to save</Text>
+                </TouchableOpacity>
               ) : (
                 <Text style={styles.bubbleText}>{item.content}</Text>
               )}
@@ -173,6 +204,7 @@ const styles = StyleSheet.create({
   senderName: { fontSize: 12, fontWeight: '700', color: '#075E54', marginBottom: 2 },
   bubbleText: { fontSize: 15 },
   messageImage: { width: 200, height: 200, borderRadius: 8 },
+  saveHint: { fontSize: 10, color: '#999', marginTop: 2, textAlign: 'center' },
   metaRow: { flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', marginTop: 4 },
   bubbleTime: { fontSize: 10, color: '#888', marginRight: 4 },
   tick: { fontSize: 12, color: '#4FC3F7' },

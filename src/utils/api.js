@@ -80,3 +80,18 @@ export function getMessages(token, conversationId) {
     headers: { Authorization: `Bearer ${token}` }
   });
 }
+
+export function deleteConversation(token, conversationId) {
+  return request(`/conversations/${conversationId}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` }
+  });
+}
+
+export function updateProfilePicture(token, base64Image) {
+  return request('/users/me/picture', {
+    method: 'PUT',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ profilePicture: base64Image })
+  });
+}

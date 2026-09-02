@@ -94,6 +94,7 @@ export default function App() {
       )}
       {screen === 'profile' && (
         <ProfileScreen
+          token={token}
           currentUser={currentUser}
           onBack={() => setScreen('chatList')}
           onLogout={handleLogout}
