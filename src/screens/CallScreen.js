@@ -11,6 +11,7 @@ function formatDuration(seconds) {
 }
 
 export default function CallScreen({ socket, callInfo, onEndCall }) {
+  // ringing -> connecting -> active   (active ONLY once real remote media arrives)
   const [status, setStatus] = useState(callInfo.mode === 'incoming' ? 'ringing' : 'calling');
   const [localStream, setLocalStream] = useState(null);
   const [remoteStream, setRemoteStream] = useState(null);
@@ -25,16 +26,22 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
     const call = createCallManager(socket, {
       onLocalStream: setLocalStream,
       onRemoteStream: (stream) => {
+        console.log('[CALL] Remote stream received. Video tracks:', stream.getVideoTracks().length, 'Audio tracks:', stream.getAudioTracks().length);
+        stream.getVideoTracks().forEach(t => console.log('[CALL] video track state:', t.readyState, 'enabled:', t.enabled));
         setRemoteStream(stream);
-        setStatus('active');
+        setStatus('active'); // ONLY place status becomes 'active' now
       },
       onCallEnded: () => {
         onEndCall();
       },
+      onCallState: (state) => {
+        console.log('[CALL] peer connection state:', state);
+      },
     });
     callManagerRef.current = call;
 
-    const handleAccepted = () => setStatus('active');
+    // Accept/Accepted no longer fake "active" — just move to "connecting"
+    const handleAccepted = () => setStatus('connecting');
     const handleAnswer = async ({ answer }) => { await call.handleAnswer(answer); };
     const handleOffer = async ({ offer }) => { await call.handleOffer(offer); };
     const handleIceCandidate = async ({ candidate }) => { await call.handleIceCandidate(candidate); };
@@ -67,7 +74,7 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
   }, []);
 
   useEffect(() => {
-    if (status === 'ringing' || status === 'calling') {
+    if (status === 'ringing' || status === 'calling' || status === 'connecting') {
       const loop = Animated.loop(
         Animated.sequence([
           Animated.timing(pulseAnim, { toValue: 1.15, duration: 900, easing: Easing.out(Easing.ease), useNativeDriver: true }),
@@ -90,7 +97,7 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
   }, [status]);
 
   const handleAccept = async () => {
-    setStatus('active');
+    setStatus('connecting'); // NOT 'active' — real media hasn't arrived yet
     await callManagerRef.current.acceptIncomingCall(callInfo.callId, callInfo.fromUserId, callInfo.callType);
   };
 
@@ -111,27 +118,24 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
   const otherName = callInfo.mode === 'incoming' ? callInfo.fromName : callInfo.targetName;
   const isVideo = callInfo.callType === 'video';
   const showingRemoteVideo = isVideo && remoteStream && status === 'active';
+  const showControls = status !== 'ringing';
+
+  const statusLabel =
+    status === 'ringing' ? 'Incoming call' :
+    status === 'calling' ? 'Calling…' :
+    status === 'connecting' ? 'Connecting…' :
+    formatDuration(duration);
 
   return (
-    <Modal
-      visible
-      animationType="fade"
-      statusBarTranslucent
-      presentationStyle="fullScreen"
-      onRequestClose={() => {}}
-    >
+    <Modal visible animationType="fade" statusBarTranslucent presentationStyle="fullScreen" onRequestClose={() => {}}>
       <StatusBar barStyle="light-content" backgroundColor="#000" />
       <View style={styles.container}>
+        {/* Remote video fills the screen ONLY once truly active */}
         {showingRemoteVideo && (
           <RTCView streamURL={remoteStream.toURL()} style={styles.remoteVideo} objectFit="cover" />
         )}
 
-        {isVideo && localStream && !cameraOff && (
-          <View style={[styles.localVideoWrap, showingRemoteVideo ? styles.localVideoSmall : styles.localVideoFull]}>
-            <RTCView streamURL={localStream.toURL()} style={StyleSheet.absoluteFill} objectFit="cover" zOrder={1} />
-          </View>
-        )}
-
+        {/* Center avatar/status — shown whenever we do NOT have real remote video yet */}
         {!showingRemoteVideo && (
           <View style={styles.centerInfo}>
             <Animated.View style={[styles.avatarRing, { transform: [{ scale: pulseAnim }] }]}>
@@ -140,9 +144,14 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
               </View>
             </Animated.View>
             <Text style={styles.nameText}>{otherName || 'Unknown'}</Text>
-            <Text style={styles.statusText}>
-              {status === 'ringing' ? 'Incoming call' : status === 'calling' ? 'Calling…' : formatDuration(duration)}
-            </Text>
+            <Text style={styles.statusText}>{statusLabel}</Text>
+          </View>
+        )}
+
+        {/* Your own camera — ALWAYS a small corner preview, never full-screen */}
+        {isVideo && localStream && !cameraOff && (
+          <View style={styles.localVideoWrap}>
+            <RTCView streamURL={localStream.toURL()} style={StyleSheet.absoluteFill} objectFit="cover" zOrder={1} />
           </View>
         )}
 
@@ -213,11 +222,10 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0B0C10' },
   remoteVideo: { ...StyleSheet.absoluteFillObject },
   localVideoWrap: {
-    position: 'absolute', borderRadius: 16, overflow: 'hidden',
-    backgroundColor: '#1c1c1e', borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)',
+    position: 'absolute', top: TOP_INSET, right: 16, width: 100, height: 140,
+    borderRadius: 16, overflow: 'hidden', backgroundColor: '#1c1c1e',
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)',
   },
-  localVideoSmall: { top: TOP_INSET, right: 16, width: 100, height: 140 },
-  localVideoFull: { top: 0, left: 0, right: 0, bottom: 0, borderRadius: 0, borderWidth: 0 },
   centerInfo: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   avatarRing: {
     width: 148, height: 148, borderRadius: 74, justifyContent: 'center', alignItems: 'center',
@@ -230,9 +238,7 @@ const styles = StyleSheet.create({
   avatarText: { color: '#fff', fontSize: 44, fontWeight: '600' },
   nameText: { color: '#fff', fontSize: 26, fontWeight: '700', marginBottom: 8, letterSpacing: 0.2 },
   statusText: { color: 'rgba(255,255,255,0.6)', fontSize: 15, letterSpacing: 0.3 },
-  videoHeader: {
-    position: 'absolute', top: TOP_INSET, left: 20, right: 130,
-  },
+  videoHeader: { position: 'absolute', top: TOP_INSET, left: 20, right: 130 },
   videoHeaderName: { color: '#fff', fontSize: 18, fontWeight: '700', textShadowColor: 'rgba(0,0,0,0.6)', textShadowRadius: 6 },
   videoHeaderDuration: { color: 'rgba(255,255,255,0.75)', fontSize: 13, marginTop: 2, textShadowColor: 'rgba(0,0,0,0.6)', textShadowRadius: 6 },
   controls: {
