@@ -8,7 +8,8 @@ import SignupScreen from './src/screens/SignupScreen';
 import ChatListScreen from './src/screens/ChatListScreen';
 import ChatScreen from './src/screens/ChatScreen';
 import ProfileScreen from './src/screens/ProfileScreen';
-import { disconnectSocket } from './src/utils/socket';
+import CallScreen from './src/screens/CallScreen';
+import { disconnectSocket, connectSocket } from './src/utils/socket';
 
 export default function App() {
   const [loading, setLoading] = useState(true);
@@ -16,6 +17,9 @@ export default function App() {
   const [token, setToken] = useState(null);
   const [currentUser, setCurrentUser] = useState(null);
   const [activeChat, setActiveChat] = useState(null); // { conversationId, otherUser, isGroup, groupName }
+  const [socket, setSocket] = useState(null);
+  const [incomingCall, setIncomingCall] = useState(null);
+  const [outgoingCall, setOutgoingCall] = useState(null);
 
   useEffect(() => {
     (async () => {
@@ -32,6 +36,22 @@ export default function App() {
       }
     })();
   }, []);
+
+  useEffect(() => {
+    if (!token) {
+      setSocket(null);
+      return;
+    }
+    const s = connectSocket(token);
+    setSocket(s);
+    const handleIncomingCall = ({ callId, fromUserId, fromName, callType }) => {
+      setIncomingCall({ mode: 'incoming', callId, fromUserId, fromName, callType });
+    };
+    s.on('call:incoming', handleIncomingCall);
+    return () => {
+      s.off('call:incoming', handleIncomingCall);
+    };
+  }, [token]);
 
   const handleLoggedIn = async (newToken, user) => {
     await AsyncStorage.setItem('token', newToken);
@@ -53,6 +73,10 @@ export default function App() {
   const openChat = (chatInfo) => {
     setActiveChat(chatInfo);
     setScreen('chat');
+  };
+
+  const startCall = (targetUserId, targetName, callType) => {
+    setOutgoingCall({ mode: 'outgoing', targetUserId, targetName, callType });
   };
 
   if (loading) {
@@ -89,6 +113,7 @@ export default function App() {
           otherUser={activeChat.otherUser}
           isGroup={activeChat.isGroup}
           groupName={activeChat.groupName}
+          onStartCall={startCall}
           onBack={() => setScreen('chatList')}
         />
       )}
@@ -99,6 +124,12 @@ export default function App() {
           onBack={() => setScreen('chatList')}
           onLogout={handleLogout}
         />
+      )}
+      {socket && incomingCall && (
+        <CallScreen socket={socket} callInfo={incomingCall} onEndCall={() => setIncomingCall(null)} />
+      )}
+      {socket && outgoingCall && (
+        <CallScreen socket={socket} callInfo={outgoingCall} onEndCall={() => setOutgoingCall(null)} />
       )}
     </>
   );
