@@ -6,6 +6,13 @@ import {
 import { getConversations, startConversation, createGroup, deleteConversation } from '../utils/api';
 import { connectSocket } from '../utils/socket';
 
+function previewText(lastMessage) {
+  if (!lastMessage) return 'No messages yet';
+  if (lastMessage.message_type === 'image') return '📷 Photo';
+  if (lastMessage.message_type === 'audio') return '🎤 Voice message';
+  return lastMessage.content;
+}
+
 export default function ChatListScreen({ token, currentUser, onOpenChat, onLogout, onOpenProfile }) {
   const [conversations, setConversations] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
@@ -32,8 +39,19 @@ export default function ChatListScreen({ token, currentUser, onOpenChat, onLogou
     const handlePresence = ({ userId, online }) => {
       setOnlineIds((prev) => ({ ...prev, [userId]: online }));
     };
+    const refreshOnActivity = () => loadConversations();
+
     socket.on('presence', handlePresence);
-    return () => socket.off('presence', handlePresence);
+    socket.on('message', refreshOnActivity);
+    socket.on('read', refreshOnActivity);
+    socket.on('delivered', refreshOnActivity);
+
+    return () => {
+      socket.off('presence', handlePresence);
+      socket.off('message', refreshOnActivity);
+      socket.off('read', refreshOnActivity);
+      socket.off('delivered', refreshOnActivity);
+    };
   }, [loadConversations, token]);
 
   const handleRefresh = async () => {
@@ -136,10 +154,8 @@ export default function ChatListScreen({ token, currentUser, onOpenChat, onLogou
         renderItem={({ item }) => {
           const isGroup = !!item.is_group;
           const title = isGroup ? item.name : item.with?.name;
-          const subtitle = isGroup
-            ? `${(item.members?.length || 0) + 1} members`
-            : item.with?.phone_number || '';
           const online = !isGroup && item.with && onlineIds[item.with.id];
+          const hasUnread = item.unreadCount > 0;
 
           return (
             <TouchableOpacity
@@ -160,8 +176,20 @@ export default function ChatListScreen({ token, currentUser, onOpenChat, onLogou
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.rowName}>{title || 'Chat'}</Text>
-                <Text style={styles.rowSub}>{subtitle}</Text>
+                <Text
+                  style={[styles.rowSub, hasUnread && styles.rowSubUnread]}
+                  numberOfLines={1}
+                >
+                  {previewText(item.lastMessage)}
+                </Text>
               </View>
+              {hasUnread && (
+                <View style={styles.unreadBadge}>
+                  <Text style={styles.unreadBadgeText}>
+                    {item.unreadCount > 99 ? '99+' : item.unreadCount}
+                  </Text>
+                </View>
+              )}
             </TouchableOpacity>
           );
         }}
@@ -256,6 +284,12 @@ const styles = StyleSheet.create({
   },
   rowName: { fontSize: 16, fontWeight: '600' },
   rowSub: { fontSize: 13, color: '#888', marginTop: 2 },
+  rowSubUnread: { color: '#111', fontWeight: '600' },
+  unreadBadge: {
+    backgroundColor: '#25D366', borderRadius: 12, minWidth: 22, height: 22,
+    justifyContent: 'center', alignItems: 'center', paddingHorizontal: 6, marginLeft: 8
+  },
+  unreadBadgeText: { color: '#fff', fontSize: 12, fontWeight: '700' },
   fab: {
     position: 'absolute', bottom: 30, right: 24, width: 56, height: 56,
     borderRadius: 28, backgroundColor: '#25D366', justifyContent: 'center',

@@ -33,10 +33,17 @@ export default function SignupScreen({ goToLogin }) {
     <ScrollView contentContainerStyle={styles.container}>
       <Text style={styles.title}>Create account</Text>
 
-      <TextInput style={styles.input} placeholder="Full name" value={name} onChangeText={setName} />
+      <TextInput
+        style={styles.input}
+        placeholder="Full name"
+        placeholderTextColor="#999"
+        value={name}
+        onChangeText={setName}
+      />
       <TextInput
         style={styles.input}
         placeholder="Email"
+        placeholderTextColor="#999"
         autoCapitalize="none"
         keyboardType="email-address"
         value={email}
@@ -45,6 +52,7 @@ export default function SignupScreen({ goToLogin }) {
       <TextInput
         style={styles.input}
         placeholder="Phone number (e.g. +911234567890)"
+        placeholderTextColor="#999"
         keyboardType="phone-pad"
         value={phoneNumber}
         onChangeText={setPhoneNumber}
@@ -52,6 +60,7 @@ export default function SignupScreen({ goToLogin }) {
       <TextInput
         style={styles.input}
         placeholder="Password"
+        placeholderTextColor="#999"
         secureTextEntry
         value={password}
         onChangeText={setPassword}
@@ -73,7 +82,7 @@ const styles = StyleSheet.create({
   title: { fontSize: 28, fontWeight: 'bold', textAlign: 'center', marginBottom: 32, color: '#075E54' },
   input: {
     borderWidth: 1, borderColor: '#ddd', borderRadius: 10, padding: 14,
-    marginBottom: 14, fontSize: 16
+    marginBottom: 14, fontSize: 16, backgroundColor: '#fff', color: '#000'
   },
   button: {
     backgroundColor: '#075E54', borderRadius: 10, padding: 16,
