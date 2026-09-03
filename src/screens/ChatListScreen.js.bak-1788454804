@@ -45,14 +45,12 @@ export default function ChatListScreen({ token, currentUser, onOpenChat, onLogou
     socket.on('message', refreshOnActivity);
     socket.on('read', refreshOnActivity);
     socket.on('delivered', refreshOnActivity);
-    socket.on('conversationActivity', refreshOnActivity);
 
     return () => {
       socket.off('presence', handlePresence);
       socket.off('message', refreshOnActivity);
       socket.off('read', refreshOnActivity);
       socket.off('delivered', refreshOnActivity);
-      socket.off('conversationActivity', refreshOnActivity);
     };
   }, [loadConversations, token]);
 
