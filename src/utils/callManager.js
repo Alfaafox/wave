@@ -22,6 +22,9 @@ export function createCallManager(socket, { onLocalStream, onRemoteStream, onCal
 
     const connection = new RTCPeerConnection({ iceServers });
 
+    connection.oniceconnectionstatechange = () => {
+      console.log('[CALL] ICE state:', connection.iceConnectionState);
+    };
     connection.onicecandidate = (event) => {
       if (event.candidate && callId && otherUserId) {
         socket.emit('call:ice-candidate', {
@@ -33,12 +36,14 @@ export function createCallManager(socket, { onLocalStream, onRemoteStream, onCal
     };
 
     connection.ontrack = (event) => {
+      console.log('[CALL] ontrack fired — kind:', event.track.kind, 'streams:', event.streams.length);
       if (event.streams && event.streams[0]) {
         onRemoteStream(event.streams[0]);
       }
     };
 
     connection.onconnectionstatechange = () => {
+      console.log('[CALL] connection state:', connection.connectionState);
       if (onCallState) onCallState(connection.connectionState);
       if (connection.connectionState === 'disconnected' || connection.connectionState === 'failed') {
         cleanup();
@@ -50,13 +55,19 @@ export function createCallManager(socket, { onLocalStream, onRemoteStream, onCal
   }
 
   async function getLocalMedia(callType) {
-    const stream = await mediaDevices.getUserMedia({
-      audio: true,
-      video: callType === 'video' ? { facingMode: 'user' } : false,
-    });
-    localStream = stream;
-    onLocalStream(stream);
-    return stream;
+    try {
+      const stream = await mediaDevices.getUserMedia({
+        audio: true,
+        video: callType === 'video' ? { facingMode: 'user' } : false,
+      });
+      console.log('[CALL] local media acquired — tracks:', stream.getTracks().map(t => t.kind + ':' + t.readyState));
+      localStream = stream;
+      onLocalStream(stream);
+      return stream;
+    } catch (err) {
+      console.log('[CALL] getUserMedia FAILED:', err.message);
+      throw err;
+    }
   }
 
   async function flushPending() {
