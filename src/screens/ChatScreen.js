@@ -14,12 +14,13 @@ import {
 import { getMessages, getConversations } from '../utils/api';
 import { connectSocket } from '../utils/socket';
 import { ReactionPicker, ReactionPills } from '../components/MessageReactions';
+import { colors, spacing, radii, typography, shadow } from '../theme';
 
 const EDIT_DELETE_WINDOW_MS = 15 * 60 * 1000;
 
 const QUICK_EMOJIS = ['😀','😂','😍','😢','😮','😡','👍','👎','❤️','🔥','🎉','🙏','😅','😎','🤔','😴','👏','💯','✅','❌','🥳','😭','😳','🤝'];
 
-function AudioBubble({ uri }) {
+function AudioBubble({ uri, isMine }) {
   const player = useAudioPlayer(uri);
   const status = useAudioPlayerStatus(player);
   const toggle = () => {
@@ -28,7 +29,9 @@ function AudioBubble({ uri }) {
   return (
     <TouchableOpacity style={styles.audioRow} onPress={toggle}>
       <Text style={styles.audioIcon}>{status.playing ? '⏸' : '▶️'}</Text>
-      <Text style={styles.audioLabel}>Voice message</Text>
+      <Text style={[styles.audioLabel, { color: isMine ? colors.bubbleOutgoingText : colors.bubbleIncomingText }]}>
+        Voice message
+      </Text>
     </TouchableOpacity>
   );
 }
@@ -442,13 +445,13 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
 
   return (
     <KeyboardAvoidingView
-      style={{ flex: 1, backgroundColor: '#ECE5DD' }}
+      style={{ flex: 1, backgroundColor: colors.surface }}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
     >
       <View style={styles.header}>
-        <TouchableOpacity onPress={onBack}>
-          <Text style={styles.backArrow}>{'<'}</Text>
+        <TouchableOpacity onPress={onBack} style={styles.backBtn}>
+          <Text style={styles.backArrow}>{'←'}</Text>
         </TouchableOpacity>
         <View style={{ flex: 1 }}>
           <Text style={styles.headerTitle}>{headerTitle}</Text>
@@ -456,11 +459,11 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
         </View>
         {!isGroup && otherUser && onStartCall && (
           <View style={{ flexDirection: 'row' }}>
-            <TouchableOpacity onPress={() => onStartCall(otherUser.id, otherUser.name, 'audio')} style={{ marginRight: 16 }}>
-              <Text style={{ fontSize: 22 }}>📞</Text>
+            <TouchableOpacity onPress={() => onStartCall(otherUser.id, otherUser.name, 'audio')} style={styles.headerIconBtn}>
+              <Text style={styles.headerIcon}>📞</Text>
             </TouchableOpacity>
-            <TouchableOpacity onPress={() => onStartCall(otherUser.id, otherUser.name, 'video')}>
-              <Text style={{ fontSize: 22 }}>📹</Text>
+            <TouchableOpacity onPress={() => onStartCall(otherUser.id, otherUser.name, 'video')} style={styles.headerIconBtn}>
+              <Text style={styles.headerIcon}>📹</Text>
             </TouchableOpacity>
           </View>
         )}
@@ -470,7 +473,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
         ref={listRef}
         data={messages}
         keyExtractor={(item) => String(item.id)}
-        contentContainerStyle={{ padding: 12 }}
+        contentContainerStyle={{ padding: spacing.md }}
         onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: true })}
         renderItem={({ item }) => {
           const isMine = item.user_id === currentUser.id;
@@ -485,7 +488,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
 
           return (
             <TouchableOpacity
-              activeOpacity={0.8}
+              activeOpacity={0.85}
               onLongPress={() => openActionMenu(item)}
               style={[styles.bubble, isMine ? styles.bubbleMine : styles.bubbleTheirs]}
             >
@@ -503,15 +506,21 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
               {item.message_type === 'image' && (
                 <TouchableOpacity onPress={() => saveImage(item.content)}>
                   <Image source={{ uri: item.content }} style={styles.messageImage} resizeMode="cover" />
-                  <Text style={styles.saveHint}>Tap to save</Text>
+                  <Text style={[styles.saveHint, { color: isMine ? 'rgba(255,255,255,0.7)' : colors.textMuted }]}>Tap to save</Text>
                 </TouchableOpacity>
               )}
-              {item.message_type === 'audio' && <AudioBubble uri={item.content} />}
-              {item.message_type === 'text' && <Text style={styles.bubbleText}>{item.content}</Text>}
+              {item.message_type === 'audio' && <AudioBubble uri={item.content} isMine={isMine} />}
+              {item.message_type === 'text' && (
+                <Text style={[styles.bubbleText, { color: isMine ? colors.bubbleOutgoingText : colors.bubbleIncomingText }]}>
+                  {item.content}
+                </Text>
+              )}
 
               <View style={styles.metaRow}>
-                {item.edited === 1 && <Text style={styles.editedLabel}>edited</Text>}
-                <Text style={styles.bubbleTime}>
+                {item.edited === 1 && (
+                  <Text style={[styles.editedLabel, { color: isMine ? 'rgba(255,255,255,0.6)' : colors.textMuted }]}>edited</Text>
+                )}
+                <Text style={[styles.bubbleTime, { color: isMine ? 'rgba(255,255,255,0.7)' : colors.textMuted }]}>
                   {new Date(item.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                 </Text>
                 {isMine && <Text style={[styles.tick, item.read && styles.tickRead]}>{item.delivered ? '✓✓' : '✓'}</Text>}
@@ -560,6 +569,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
         <TextInput
           style={styles.input}
           placeholder="Type a message"
+          placeholderTextColor={colors.textMuted}
           value={input}
           onChangeText={handleTypingInput}
           onFocus={() => setShowEmojiBar(false)}
@@ -567,16 +577,16 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
         />
 
         <TouchableOpacity style={styles.attachButton} onPress={takePhoto} disabled={sendingCameraImage}>
-          {sendingCameraImage ? <ActivityIndicator size="small" color="#075E54" /> : <Text style={styles.attachIcon}>📷</Text>}
+          {sendingCameraImage ? <ActivityIndicator size="small" color={colors.accent} /> : <Text style={styles.attachIcon}>📷</Text>}
         </TouchableOpacity>
 
         <TouchableOpacity style={styles.attachButton} onPress={pickImage} disabled={sendingImage}>
-          {sendingImage ? <ActivityIndicator size="small" color="#075E54" /> : <Text style={styles.attachIcon}>📎</Text>}
+          {sendingImage ? <ActivityIndicator size="small" color={colors.accent} /> : <Text style={styles.attachIcon}>📎</Text>}
         </TouchableOpacity>
 
         {editingMessage ? (
           <TouchableOpacity style={styles.sendButton} onPress={submitEdit}>
-            <Text style={{ color: '#fff', fontWeight: '600' }}>Save</Text>
+            <Text style={styles.sendButtonText}>Save</Text>
           </TouchableOpacity>
         ) : input.trim().length === 0 ? (
           <TouchableOpacity
@@ -586,14 +596,14 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
           >
             <Animated.View style={[
               styles.micPulse,
-              recorderState.isRecording && { transform: [{ scale: pulseAnim }], backgroundColor: '#d32f2f' }
+              recorderState.isRecording && { transform: [{ scale: pulseAnim }], backgroundColor: colors.recordingPulse }
             ]}>
               <Text style={styles.micIcon}>{recorderState.isRecording ? '⏺' : '🎤'}</Text>
             </Animated.View>
           </TouchableOpacity>
         ) : (
           <TouchableOpacity style={styles.sendButton} onPress={() => sendMessage()}>
-            <Text style={{ color: '#fff', fontWeight: '600' }}>Send</Text>
+            <Text style={styles.sendButtonText}>Send</Text>
           </TouchableOpacity>
         )}
       </View>
@@ -603,7 +613,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
           horizontal
           showsHorizontalScrollIndicator={false}
           style={styles.emojiBar}
-          contentContainerStyle={{ paddingHorizontal: 10 }}
+          contentContainerStyle={{ paddingHorizontal: spacing.md }}
         >
           {QUICK_EMOJIS.map((e) => (
             <TouchableOpacity key={e} onPress={() => insertEmoji(e)} style={styles.emojiBarItem}>
@@ -648,7 +658,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
               </TouchableOpacity>
             )}
             <TouchableOpacity style={styles.actionItem} onPress={confirmDelete}>
-              <Text style={[styles.actionText, { color: '#d32f2f' }]}>Delete</Text>
+              <Text style={[styles.actionText, { color: colors.danger }]}>Delete</Text>
             </TouchableOpacity>
           </View>
         </TouchableOpacity>
@@ -690,81 +700,99 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
 
 const styles = StyleSheet.create({
   header: {
-    flexDirection: 'row', alignItems: 'center', padding: 16, paddingTop: 50,
-    backgroundColor: '#075E54'
+    flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.lg,
+    paddingTop: 50, paddingBottom: spacing.md,
+    backgroundColor: colors.headerBackground,
+    borderBottomWidth: 1, borderBottomColor: colors.headerBorder
   },
-  backArrow: { color: '#fff', fontSize: 22, marginRight: 14 },
-  headerTitle: { color: '#fff', fontSize: 18, fontWeight: '600' },
-  headerSubtitle: { color: '#DCF8C6', fontSize: 12, marginTop: 2 },
-  bubble: { maxWidth: '75%', borderRadius: 10, padding: 10, marginBottom: 8 },
-  bubbleMine: { backgroundColor: '#DCF8C6', alignSelf: 'flex-end' },
-  bubbleTheirs: { backgroundColor: '#fff', alignSelf: 'flex-start' },
-  senderName: { fontSize: 12, fontWeight: '700', color: '#075E54', marginBottom: 2 },
-  bubbleText: { fontSize: 15 },
-  deletedText: { fontSize: 13, color: '#888', fontStyle: 'italic' },
-  messageImage: { width: 200, height: 200, borderRadius: 8 },
-  saveHint: { fontSize: 10, color: '#999', marginTop: 2, textAlign: 'center' },
-  audioRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 6, minWidth: 140 },
-  audioIcon: { fontSize: 20, marginRight: 8 },
-  audioLabel: { fontSize: 14, color: '#333' },
+  backBtn: { marginRight: spacing.md, padding: 2 },
+  backArrow: { color: colors.textPrimary, fontSize: 22 },
+  headerTitle: { color: colors.textPrimary, fontSize: 17, fontWeight: '600' },
+  headerSubtitle: { color: colors.textSecondary, fontSize: 12, marginTop: 2 },
+  headerIconBtn: { marginLeft: spacing.md, padding: 2 },
+  headerIcon: { fontSize: 20 },
+
+  bubble: { maxWidth: '78%', borderRadius: radii.bubble, padding: spacing.md, marginBottom: spacing.sm },
+  bubbleMine: {
+    backgroundColor: colors.bubbleOutgoing, alignSelf: 'flex-end',
+    borderBottomRightRadius: radii.bubbleTail
+  },
+  bubbleTheirs: {
+    backgroundColor: colors.bubbleIncoming, alignSelf: 'flex-start',
+    borderBottomLeftRadius: radii.bubbleTail
+  },
+  senderName: { fontSize: 12, fontWeight: '700', color: colors.accent, marginBottom: 2 },
+  bubbleText: { ...typography.bubbleText },
+  deletedText: { fontSize: 13, color: colors.textMuted, fontStyle: 'italic' },
+  messageImage: { width: 200, height: 200, borderRadius: radii.sm },
+  saveHint: { fontSize: 10, marginTop: 2, textAlign: 'center' },
+  audioRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: spacing.xs, minWidth: 140 },
+  audioIcon: { fontSize: 20, marginRight: spacing.sm },
+  audioLabel: { fontSize: 14 },
   replyPreview: {
-    borderLeftWidth: 3, borderLeftColor: '#075E54', backgroundColor: 'rgba(7,94,84,0.08)',
-    paddingLeft: 8, paddingVertical: 4, marginBottom: 6, borderRadius: 4
+    borderLeftWidth: 3, borderLeftColor: colors.accent, backgroundColor: 'rgba(44,107,237,0.08)',
+    paddingLeft: spacing.sm, paddingVertical: 4, marginBottom: spacing.sm, borderRadius: 4
   },
-  replyPreviewName: { fontSize: 12, fontWeight: '700', color: '#075E54' },
-  replyPreviewText: { fontSize: 12, color: '#555' },
+  replyPreviewName: { fontSize: 12, fontWeight: '700', color: colors.accent },
+  replyPreviewText: { fontSize: 12, color: colors.textSecondary },
   metaRow: { flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', marginTop: 4 },
-  editedLabel: { fontSize: 10, color: '#999', marginRight: 4, fontStyle: 'italic' },
-  bubbleTime: { fontSize: 10, color: '#888', marginRight: 4 },
-  tick: { fontSize: 12, color: '#888' },
-  tickRead: { color: '#4FC3F7' },
+  editedLabel: { fontSize: 10, marginRight: 4, fontStyle: 'italic' },
+  bubbleTime: { fontSize: 10, marginRight: 4 },
+  tick: { fontSize: 12, color: 'rgba(255,255,255,0.7)' },
+  tickRead: { color: '#8FD3FF' },
+
   replyBar: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: '#f0f0f0',
-    paddingHorizontal: 14, paddingVertical: 8, borderTopWidth: 1, borderTopColor: '#ddd'
+    flexDirection: 'row', alignItems: 'center', backgroundColor: colors.surface,
+    paddingHorizontal: spacing.lg, paddingVertical: spacing.sm,
+    borderTopWidth: 1, borderTopColor: colors.border
   },
-  replyBarName: { fontSize: 12, fontWeight: '700', color: '#075E54' },
-  replyBarText: { fontSize: 12, color: '#555' },
-  replyBarClose: { fontSize: 16, color: '#888', paddingHorizontal: 8 },
+  replyBarName: { fontSize: 12, fontWeight: '700', color: colors.accent },
+  replyBarText: { fontSize: 12, color: colors.textSecondary },
+  replyBarClose: { fontSize: 16, color: colors.textMuted, paddingHorizontal: spacing.sm },
+
   inputRow: {
-    flexDirection: 'row', padding: 10, backgroundColor: '#fff',
-    alignItems: 'flex-end', borderTopWidth: 1, borderTopColor: '#eee'
+    flexDirection: 'row', padding: spacing.sm, backgroundColor: colors.background,
+    alignItems: 'flex-end', borderTopWidth: 1, borderTopColor: colors.border
   },
-  attachButton: { padding: 8, marginRight: 4, minWidth: 30, alignItems: 'center' },
+  attachButton: { padding: spacing.sm, marginRight: 2, minWidth: 30, alignItems: 'center' },
   attachIcon: { fontSize: 22 },
-  emojiButton: { padding: 8, marginRight: 4, minWidth: 30, alignItems: 'center', justifyContent: 'center' },
+  emojiButton: { padding: spacing.sm, marginRight: 2, minWidth: 30, alignItems: 'center', justifyContent: 'center' },
   emojiToggleIcon: { fontSize: 22 },
-  emojiBar: { backgroundColor: '#fff', paddingVertical: 8, borderTopWidth: 1, borderTopColor: '#eee' },
-  emojiBarItem: { paddingHorizontal: 8, justifyContent: 'center' },
+  emojiBar: { backgroundColor: colors.background, paddingVertical: spacing.sm, borderTopWidth: 1, borderTopColor: colors.border },
+  emojiBarItem: { paddingHorizontal: spacing.sm, justifyContent: 'center' },
   input: {
-    flex: 1, borderWidth: 1, borderColor: '#ddd', borderRadius: 20,
-    paddingHorizontal: 16, paddingVertical: 10, marginRight: 8, maxHeight: 100
+    flex: 1, borderWidth: 1, borderColor: colors.border, borderRadius: radii.pill,
+    paddingHorizontal: spacing.lg, paddingVertical: spacing.sm, marginRight: spacing.sm,
+    maxHeight: 100, color: colors.textPrimary
   },
   sendButton: {
-    backgroundColor: '#075E54', borderRadius: 20, paddingHorizontal: 18,
-    paddingVertical: 12, justifyContent: 'center'
+    backgroundColor: colors.accent, borderRadius: radii.pill, paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md, justifyContent: 'center'
   },
+  sendButtonText: { color: colors.textOnAccent, fontWeight: '600' },
   micButton: { width: 44, height: 44, justifyContent: 'center', alignItems: 'center' },
   micPulse: {
-    width: 44, height: 44, borderRadius: 22, backgroundColor: '#075E54',
+    width: 44, height: 44, borderRadius: 22, backgroundColor: colors.accent,
     justifyContent: 'center', alignItems: 'center'
   },
   micIcon: { fontSize: 18 },
-  recDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#d32f2f', marginRight: 6 },
+  recDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.danger, marginRight: 6 },
   recordingBanner: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    backgroundColor: '#fff3cd', paddingHorizontal: 16, paddingVertical: 8
+    backgroundColor: '#FFF6E5', paddingHorizontal: spacing.lg, paddingVertical: spacing.sm
   },
-  recordingText: { color: '#856404', fontSize: 13 },
-  cancelText: { color: '#d32f2f', fontSize: 13, fontWeight: '600' },
-  actionOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.3)', justifyContent: 'center', alignItems: 'center' },
-  actionMenu: { backgroundColor: '#fff', borderRadius: 12, width: 220, paddingVertical: 8 },
-  actionItem: { paddingVertical: 14, paddingHorizontal: 20 },
-  actionText: { fontSize: 16, color: '#111' },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
-  forwardBox: { backgroundColor: '#fff', padding: 20, borderTopLeftRadius: 16, borderTopRightRadius: 16, maxHeight: '60%' },
-  modalTitle: { fontSize: 18, fontWeight: '600', marginBottom: 14 },
-  forwardRow: { paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#eee' },
-  forwardRowText: { fontSize: 15 },
-  empty: { textAlign: 'center', color: '#999', marginTop: 20 },
-  modalCancel: { padding: 12, alignItems: 'center', marginTop: 8 }
+  recordingText: { color: '#8A6100', fontSize: 13 },
+  cancelText: { color: colors.danger, fontSize: 13, fontWeight: '600' },
+
+  actionOverlay: { flex: 1, backgroundColor: colors.overlay, justifyContent: 'center', alignItems: 'center' },
+  actionMenu: { backgroundColor: colors.background, borderRadius: radii.md, width: 220, paddingVertical: spacing.sm, ...shadow.md },
+  actionItem: { paddingVertical: 14, paddingHorizontal: spacing.xl },
+  actionText: { fontSize: 16, color: colors.textPrimary },
+  modalOverlay: { flex: 1, backgroundColor: colors.overlay, justifyContent: 'flex-end' },
+  forwardBox: { backgroundColor: colors.background, padding: spacing.lg, borderTopLeftRadius: radii.md, borderTopRightRadius: radii.md, maxHeight: '60%' },
+  modalTitle: { fontSize: 18, fontWeight: '600', marginBottom: spacing.md, color: colors.textPrimary },
+  forwardRow: { paddingVertical: spacing.md, borderBottomWidth: 1, borderBottomColor: colors.divider },
+  forwardRowText: { fontSize: 15, color: colors.textPrimary },
+  empty: { textAlign: 'center', color: colors.textMuted, marginTop: 20 },
+  modalCancel: { padding: spacing.md, alignItems: 'center', marginTop: spacing.sm }
 });
