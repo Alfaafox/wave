@@ -15,6 +15,14 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
   const [status, setStatus] = useState(callInfo.mode === 'incoming' ? 'ringing' : 'calling');
   const [localStream, setLocalStream] = useState(null);
   const [remoteStream, setRemoteStream] = useState(null);
+  // Tracks how many video tracks the remote stream has at the moment onRemoteStream
+  // last fired. react-native-webrtc's RTCView binds to a stream by identity, and
+  // ontrack can fire multiple times for the SAME stream object (once per track,
+  // e.g. audio then video a few ms later). Passing the same object reference to
+  // setState twice makes React skip re-rendering the second time, so RTCView
+  // never learns a video track was added after it already mounted audio-only.
+  // Keying RTCView on this count forces a clean remount the moment video shows up.
+  const [remoteVideoTrackCount, setRemoteVideoTrackCount] = useState(0);
   const [muted, setMuted] = useState(false);
   const [cameraOff, setCameraOff] = useState(false);
   const [duration, setDuration] = useState(0);
@@ -26,9 +34,12 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
     const call = createCallManager(socket, {
       onLocalStream: setLocalStream,
       onRemoteStream: (stream) => {
-        console.log('[CALL] Remote stream received. Video tracks:', stream.getVideoTracks().length, 'Audio tracks:', stream.getAudioTracks().length);
-        stream.getVideoTracks().forEach(t => console.log('[CALL] video track state:', t.readyState, 'enabled:', t.enabled));
+        const videoTracks = stream.getVideoTracks();
+        const audioTracks = stream.getAudioTracks();
+        console.log('[CALL] Remote stream received. Video tracks:', videoTracks.length, 'Audio tracks:', audioTracks.length);
+        videoTracks.forEach(t => console.log('[CALL] video track state:', t.readyState, 'enabled:', t.enabled));
         setRemoteStream(stream);
+        setRemoteVideoTrackCount(videoTracks.length);
         setStatus('active'); // ONLY place status becomes 'active' now
       },
       onCallEnded: () => {
@@ -117,7 +128,7 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
 
   const otherName = callInfo.mode === 'incoming' ? callInfo.fromName : callInfo.targetName;
   const isVideo = callInfo.callType === 'video';
-  const showingRemoteVideo = isVideo && remoteStream && status === 'active';
+  const showingRemoteVideo = isVideo && remoteStream && status === 'active' && remoteVideoTrackCount > 0;
   const showControls = status !== 'ringing';
 
   const statusLabel =
@@ -130,9 +141,16 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
     <Modal visible animationType="fade" statusBarTranslucent presentationStyle="fullScreen" onRequestClose={() => {}}>
       <StatusBar barStyle="light-content" backgroundColor="#000" />
       <View style={styles.container}>
-        {/* Remote video fills the screen ONLY once truly active */}
+        {/* Remote video fills the screen ONLY once truly active AND a video track is present.
+            key forces a clean remount whenever the video track count changes, since
+            RTCView otherwise won't notice tracks added to a stream it already bound to. */}
         {showingRemoteVideo && (
-          <RTCView streamURL={remoteStream.toURL()} style={styles.remoteVideo} objectFit="cover" />
+          <RTCView
+            key={`remote-video-${remoteVideoTrackCount}`}
+            streamURL={remoteStream.toURL()}
+            style={styles.remoteVideo}
+            objectFit="cover"
+          />
         )}
 
         {/* Center avatar/status — shown whenever we do NOT have real remote video yet */}
