@@ -31,7 +31,7 @@ function AudioBubble({ uri }) {
   );
 }
 
-export default function ChatScreen({ token, currentUser, conversationId, otherUser, isGroup, groupName, onBack }) {
+export default function ChatScreen({ token, currentUser, conversationId, otherUser, isGroup, groupName, onBack, onStartCall }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [isOtherTyping, setIsOtherTyping] = useState(false);
@@ -397,10 +397,20 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
         <TouchableOpacity onPress={onBack}>
           <Text style={styles.backArrow}>{'<'}</Text>
         </TouchableOpacity>
-        <View>
+        <View style={{ flex: 1 }}>
           <Text style={styles.headerTitle}>{headerTitle}</Text>
           {!!headerSubtitle && <Text style={styles.headerSubtitle}>{headerSubtitle}</Text>}
         </View>
+        {!isGroup && otherUser && onStartCall && (
+          <View style={{ flexDirection: 'row' }}>
+            <TouchableOpacity onPress={() => onStartCall(otherUser.id, otherUser.name, 'audio')} style={{ marginRight: 16 }}>
+              <Text style={{ fontSize: 22 }}>📞</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => onStartCall(otherUser.id, otherUser.name, 'video')}>
+              <Text style={{ fontSize: 22 }}>📹</Text>
+            </TouchableOpacity>
+          </View>
+        )}
       </View>
 
       <FlatList
