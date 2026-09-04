@@ -2,7 +2,7 @@ import React, { useEffect, useState, useRef } from 'react';
 import {
   View, Text, FlatList, TextInput, TouchableOpacity, StyleSheet,
   KeyboardAvoidingView, Platform, Image, Alert, ActivityIndicator,
-  Modal, Clipboard, Animated, ScrollView
+  Modal, Clipboard
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import * as MediaLibrary from 'expo-media-library';
@@ -16,8 +16,6 @@ import { connectSocket } from '../utils/socket';
 import { ReactionPicker, ReactionPills } from '../components/MessageReactions';
 
 const EDIT_DELETE_WINDOW_MS = 15 * 60 * 1000;
-
-const QUICK_EMOJIS = ['😀','😂','😍','😢','😮','😡','👍','👎','❤️','🔥','🎉','🙏','😅','😎','🤔','😴','👏','💯','✅','❌','🥳','😭','😳','🤝'];
 
 function AudioBubble({ uri }) {
   const player = useAudioPlayer(uri);
@@ -39,18 +37,15 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
   const [isOtherTyping, setIsOtherTyping] = useState(false);
   const [isOnline, setIsOnline] = useState(false);
   const [sendingImage, setSendingImage] = useState(false);
-  const [sendingCameraImage, setSendingCameraImage] = useState(false);
   const [replyTo, setReplyTo] = useState(null);
   const [editingMessage, setEditingMessage] = useState(null);
   const [actionMenuFor, setActionMenuFor] = useState(null);
   const [forwardPickerFor, setForwardPickerFor] = useState(null);
   const [forwardTargets, setForwardTargets] = useState([]);
   const [reactionPickerFor, setReactionPickerFor] = useState(null);
-  const [showEmojiBar, setShowEmojiBar] = useState(false);
   const listRef = useRef(null);
   const socketRef = useRef(null);
   const typingTimeoutRef = useRef(null);
-  const pulseAnim = useRef(new Animated.Value(1)).current;
 
   const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const recorderState = useAudioRecorderState(audioRecorder);
@@ -62,21 +57,6 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
       await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: true });
     })();
   }, []);
-
-  useEffect(() => {
-    if (recorderState.isRecording) {
-      const loop = Animated.loop(
-        Animated.sequence([
-          Animated.timing(pulseAnim, { toValue: 1.35, duration: 500, useNativeDriver: true }),
-          Animated.timing(pulseAnim, { toValue: 1, duration: 500, useNativeDriver: true }),
-        ])
-      );
-      loop.start();
-      return () => loop.stop();
-    } else {
-      pulseAnim.setValue(1);
-    }
-  }, [recorderState.isRecording]);
 
   useEffect(() => {
     let isMounted = true;
@@ -157,11 +137,13 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
       Alert.alert('Not connected', 'Reconnecting... try again in a second.');
       return;
     }
+    if (messageType === 'image') setSendingImage(true);
 
     const payload = { conversationId, content, messageType };
     if (replyTo) payload.replyToId = replyTo.id;
 
     socketRef.current.emit('message', payload, (response) => {
+      if (messageType === 'image') setSendingImage(false);
       if (!response?.ok) {
         Alert.alert('Message failed', response?.error || 'Could not send message. Try again.');
       }
@@ -176,29 +158,6 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     socketRef.current?.emit('typing', { conversationId });
   };
 
-  const formatDuration = (ms) => {
-    const totalSec = Math.floor((ms || 0) / 1000);
-    const m = Math.floor(totalSec / 60);
-    const s = totalSec % 60;
-    return `${m}:${s.toString().padStart(2, '0')}`;
-  };
-
-  const insertEmoji = (emoji) => setInput((prev) => prev + emoji);
-
-  const processAndSendImage = async (asset) => {
-    if (!asset?.base64) {
-      Alert.alert('Error', 'Could not read the image.');
-      return;
-    }
-    const dataUri = `data:image/jpeg;base64,${asset.base64}`;
-    const approxKb = Math.round((dataUri.length * 0.75) / 1024);
-    if (approxKb > 3000) {
-      Alert.alert('Image too large', `About ${approxKb}KB. Try a smaller photo.`);
-      return;
-    }
-    sendMessage(dataUri, 'image');
-  };
-
   const pickImage = async () => {
     try {
       const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -210,32 +169,20 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
         mediaTypes: ['images'], quality: 0.3, base64: true, allowsEditing: false
       });
       if (result.canceled) return;
-      setSendingImage(true);
-      await processAndSendImage(result.assets?.[0]);
-      setSendingImage(false);
-    } catch (err) {
-      setSendingImage(false);
-      Alert.alert('Error picking image', err.message);
-    }
-  };
-
-  const takePhoto = async () => {
-    try {
-      const permission = await ImagePicker.requestCameraPermissionsAsync();
-      if (!permission.granted) {
-        Alert.alert('Permission needed', 'We need camera access to take a photo.');
+      const asset = result.assets?.[0];
+      if (!asset?.base64) {
+        Alert.alert('Error', 'Could not read the selected image.');
         return;
       }
-      const result = await ImagePicker.launchCameraAsync({
-        quality: 0.3, base64: true, allowsEditing: false
-      });
-      if (result.canceled) return;
-      setSendingCameraImage(true);
-      await processAndSendImage(result.assets?.[0]);
-      setSendingCameraImage(false);
+      const dataUri = `data:image/jpeg;base64,${asset.base64}`;
+      const approxKb = Math.round((dataUri.length * 0.75) / 1024);
+      if (approxKb > 3000) {
+        Alert.alert('Image too large', `About ${approxKb}KB. Try a smaller photo.`);
+        return;
+      }
+      sendMessage(dataUri, 'image');
     } catch (err) {
-      setSendingCameraImage(false);
-      Alert.alert('Error taking photo', err.message);
+      Alert.alert('Error picking image', err.message);
     }
   };
 
@@ -553,43 +500,27 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
       )}
 
       <View style={styles.inputRow}>
-        <TouchableOpacity style={styles.emojiButton} onPress={() => setShowEmojiBar((v) => !v)}>
-          <Text style={styles.emojiToggleIcon}>😊</Text>
+        <TouchableOpacity style={styles.attachButton} onPress={pickImage} disabled={sendingImage}>
+          {sendingImage ? <ActivityIndicator size="small" color="#075E54" /> : <Text style={styles.attachIcon}>📎</Text>}
         </TouchableOpacity>
-
         <TextInput
           style={styles.input}
           placeholder="Type a message"
           value={input}
           onChangeText={handleTypingInput}
-          onFocus={() => setShowEmojiBar(false)}
           multiline
         />
-
-        <TouchableOpacity style={styles.attachButton} onPress={takePhoto} disabled={sendingCameraImage}>
-          {sendingCameraImage ? <ActivityIndicator size="small" color="#075E54" /> : <Text style={styles.attachIcon}>📷</Text>}
-        </TouchableOpacity>
-
-        <TouchableOpacity style={styles.attachButton} onPress={pickImage} disabled={sendingImage}>
-          {sendingImage ? <ActivityIndicator size="small" color="#075E54" /> : <Text style={styles.attachIcon}>📎</Text>}
-        </TouchableOpacity>
-
         {editingMessage ? (
           <TouchableOpacity style={styles.sendButton} onPress={submitEdit}>
             <Text style={{ color: '#fff', fontWeight: '600' }}>Save</Text>
           </TouchableOpacity>
         ) : input.trim().length === 0 ? (
           <TouchableOpacity
-            style={styles.micButton}
+            style={[styles.micButton, recorderState.isRecording && styles.micButtonActive]}
             onPressIn={startRecording}
             onPressOut={stopRecordingAndSend}
           >
-            <Animated.View style={[
-              styles.micPulse,
-              recorderState.isRecording && { transform: [{ scale: pulseAnim }], backgroundColor: '#d32f2f' }
-            ]}>
-              <Text style={styles.micIcon}>{recorderState.isRecording ? '⏺' : '🎤'}</Text>
-            </Animated.View>
+            <Text style={styles.micIcon}>{recorderState.isRecording ? '⏺' : '🎤'}</Text>
           </TouchableOpacity>
         ) : (
           <TouchableOpacity style={styles.sendButton} onPress={() => sendMessage()}>
@@ -597,28 +528,9 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
           </TouchableOpacity>
         )}
       </View>
-
-      {showEmojiBar && (
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          style={styles.emojiBar}
-          contentContainerStyle={{ paddingHorizontal: 10 }}
-        >
-          {QUICK_EMOJIS.map((e) => (
-            <TouchableOpacity key={e} onPress={() => insertEmoji(e)} style={styles.emojiBarItem}>
-              <Text style={{ fontSize: 26 }}>{e}</Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-      )}
-
       {recorderState.isRecording && (
         <View style={styles.recordingBanner}>
-          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-            <Animated.View style={[styles.recDot, { transform: [{ scale: pulseAnim }] }]} />
-            <Text style={styles.recordingText}>Recording {formatDuration(recorderState.durationMillis)} — release to send</Text>
-          </View>
+          <Text style={styles.recordingText}>Recording... release to send</Text>
           <TouchableOpacity onPress={cancelRecording}>
             <Text style={styles.cancelText}>Cancel</Text>
           </TouchableOpacity>
@@ -731,10 +643,6 @@ const styles = StyleSheet.create({
   },
   attachButton: { padding: 8, marginRight: 4, minWidth: 30, alignItems: 'center' },
   attachIcon: { fontSize: 22 },
-  emojiButton: { padding: 8, marginRight: 4, minWidth: 30, alignItems: 'center', justifyContent: 'center' },
-  emojiToggleIcon: { fontSize: 22 },
-  emojiBar: { backgroundColor: '#fff', paddingVertical: 8, borderTopWidth: 1, borderTopColor: '#eee' },
-  emojiBarItem: { paddingHorizontal: 8, justifyContent: 'center' },
   input: {
     flex: 1, borderWidth: 1, borderColor: '#ddd', borderRadius: 20,
     paddingHorizontal: 16, paddingVertical: 10, marginRight: 8, maxHeight: 100
@@ -743,13 +651,12 @@ const styles = StyleSheet.create({
     backgroundColor: '#075E54', borderRadius: 20, paddingHorizontal: 18,
     paddingVertical: 12, justifyContent: 'center'
   },
-  micButton: { width: 44, height: 44, justifyContent: 'center', alignItems: 'center' },
-  micPulse: {
-    width: 44, height: 44, borderRadius: 22, backgroundColor: '#075E54',
+  micButton: {
+    backgroundColor: '#075E54', borderRadius: 20, width: 44, height: 44,
     justifyContent: 'center', alignItems: 'center'
   },
+  micButtonActive: { backgroundColor: '#d32f2f' },
   micIcon: { fontSize: 18 },
-  recDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#d32f2f', marginRight: 6 },
   recordingBanner: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
     backgroundColor: '#fff3cd', paddingHorizontal: 16, paddingVertical: 8
