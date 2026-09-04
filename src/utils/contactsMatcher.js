@@ -8,7 +8,7 @@ import { matchContacts } from './api';
  * backend which ones belong to registered Wave users. Raw numbers never
  * leave the device — only SHA-256 hashes are sent.
  *
- * Returns: { registered: [{ id, name, contactName, profilePicture }], unregistered: [{ contactName, phone }] }
+ * Returns: { registered: [{ id, name, phone, contactName, profilePicture }], unregistered: [{ contactName, phone }] }
  */
 export async function getMatchedContacts(token) {
   const { status } = await Contacts.requestPermissionsAsync();
@@ -24,7 +24,7 @@ export async function getMatchedContacts(token) {
 
   const seenNormalized = new Set();
   const hashToContact = {};
-  const contactsWithNumbers = [];
+  const hashesToCheck = [];
 
   for (const contact of data) {
     if (!contact.phoneNumbers || contact.phoneNumbers.length === 0) continue;
@@ -43,20 +43,21 @@ export async function getMatchedContacts(token) {
       contactName: contact.name || rawNumber,
       phone: rawNumber
     };
-    contactsWithNumbers.push(hash);
+    hashesToCheck.push(hash);
   }
 
-  if (contactsWithNumbers.length === 0) {
+  if (hashesToCheck.length === 0) {
     return { registered: [], unregistered: [] };
   }
 
-  const { matches } = await matchContacts(token, contactsWithNumbers);
+  const { matches } = await matchContacts(token, hashesToCheck);
 
   const matchedHashes = new Set(matches.map((m) => m.hash));
 
   const registered = matches.map((m) => ({
     id: m.id,
     name: m.name,
+    phone: m.phone, // authoritative — the matched user's own registered number
     contactName: hashToContact[m.hash]?.contactName || m.name,
     profilePicture: m.profilePicture
   }));

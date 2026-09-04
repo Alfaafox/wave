@@ -6,6 +6,7 @@ import {
 import { getConversations, startConversation, createGroup, deleteConversation } from '../utils/api';
 import { connectSocket } from '../utils/socket';
 import { colors, spacing, radii, typography, shadow } from '../theme';
+import ContactPickerScreen from './ContactPickerScreen';
 
 function previewText(lastMessage) {
   if (!lastMessage) return 'No messages yet';
@@ -17,15 +18,14 @@ function previewText(lastMessage) {
 export default function ChatListScreen({ token, currentUser, onOpenChat, onLogout, onOpenProfile }) {
   const [conversations, setConversations] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
-  const [modalVisible, setModalVisible] = useState(false);
-  const [mode, setMode] = useState('chat');
-  const [phoneInput, setPhoneInput] = useState('');
-  const [groupName, setGroupName] = useState('');
-  const [groupPhones, setGroupPhones] = useState('');
   const [starting, setStarting] = useState(false);
   const [onlineIds, setOnlineIds] = useState({});
   const [searchQuery, setSearchQuery] = useState('');
   const [composeOpen, setComposeOpen] = useState(false);
+
+  const [pickerMode, setPickerMode] = useState(null);
+  const [groupNamingFor, setGroupNamingFor] = useState(null);
+  const [groupNameInput, setGroupNameInput] = useState('');
 
   const loadConversations = useCallback(async () => {
     try {
@@ -65,27 +65,29 @@ export default function ChatListScreen({ token, currentUser, onOpenChat, onLogou
     setRefreshing(false);
   };
 
-  const openStartChatModal = () => {
+  const openChatPicker = () => {
     setComposeOpen(false);
-    setMode('chat');
-    setPhoneInput('');
-    setModalVisible(true);
+    setPickerMode('chat');
   };
 
-  const openGroupModal = () => {
+  const openGroupPicker = () => {
     setComposeOpen(false);
-    setMode('group');
-    setGroupName('');
-    setGroupPhones('');
-    setModalVisible(true);
+    setPickerMode('group');
   };
 
-  const handleStartChat = async () => {
-    if (!phoneInput.trim()) return;
+  const closePicker = () => {
+    setPickerMode(null);
+  };
+
+  const handlePickedUserForChat = async (user) => {
+    if (!user.phone) {
+      Alert.alert('Missing phone number', 'This contact has no phone number on record.');
+      return;
+    }
+    setPickerMode(null);
     setStarting(true);
     try {
-      const result = await startConversation(token, phoneInput.trim());
-      setModalVisible(false);
+      const result = await startConversation(token, user.phone);
       await loadConversations();
       onOpenChat({ conversationId: result.conversationId, otherUser: result.with, isGroup: false });
     } catch (err) {
@@ -95,17 +97,25 @@ export default function ChatListScreen({ token, currentUser, onOpenChat, onLogou
     }
   };
 
-  const handleCreateGroup = async () => {
-    if (!groupName.trim() || !groupPhones.trim()) return;
-    const phones = groupPhones.split(',').map((p) => p.trim()).filter(Boolean);
+  const handleGroupSelectionConfirmed = (selectedUsers) => {
+    setPickerMode(null);
+    setGroupNamingFor(selectedUsers);
+    setGroupNameInput('');
+  };
+
+  const handleCreateGroupFromPicker = async () => {
+    if (!groupNameInput.trim() || !groupNamingFor || groupNamingFor.length === 0) return;
     setStarting(true);
     try {
-      const result = await createGroup(token, groupName.trim(), phones);
-      setModalVisible(false);
-      await loadConversations();
-      if (result.notFound?.length) {
-        Alert.alert('Some numbers not found', `Not registered: ${result.notFound.join(', ')}`);
+      const phones = groupNamingFor.map((u) => u.phone).filter(Boolean);
+      if (phones.length === 0) {
+        Alert.alert('No valid numbers', 'None of the selected contacts have a phone number on record.');
+        setStarting(false);
+        return;
       }
+      const result = await createGroup(token, groupNameInput.trim(), phones);
+      setGroupNamingFor(null);
+      await loadConversations();
       onOpenChat({ conversationId: result.conversationId, isGroup: true, groupName: result.name });
     } catch (err) {
       Alert.alert('Could not create group', err.message);
@@ -145,6 +155,18 @@ export default function ChatListScreen({ token, currentUser, onOpenChat, onLogou
       return (title || '').toLowerCase().includes(q);
     });
   }, [conversations, searchQuery]);
+
+  if (pickerMode) {
+    return (
+      <ContactPickerScreen
+        token={token}
+        mode={pickerMode}
+        onClose={closePicker}
+        onSelectUser={handlePickedUserForChat}
+        onConfirmSelection={handleGroupSelectionConfirmed}
+      />
+    );
+  }
 
   return (
     <View style={styles.container}>
@@ -238,7 +260,6 @@ export default function ChatListScreen({ token, currentUser, onOpenChat, onLogou
         }}
       />
 
-      {/* Single compose FAB — opens a small sheet with New chat / New group */}
       <TouchableOpacity style={styles.fab} onPress={() => setComposeOpen(true)} activeOpacity={0.85}>
         <Text style={styles.fabText}>✎</Text>
       </TouchableOpacity>
@@ -246,11 +267,11 @@ export default function ChatListScreen({ token, currentUser, onOpenChat, onLogou
       <Modal visible={composeOpen} transparent animationType="fade" onRequestClose={() => setComposeOpen(false)}>
         <TouchableOpacity style={styles.composeOverlay} activeOpacity={1} onPress={() => setComposeOpen(false)}>
           <View style={styles.composeSheet}>
-            <TouchableOpacity style={styles.composeItem} onPress={openStartChatModal}>
+            <TouchableOpacity style={styles.composeItem} onPress={openChatPicker}>
               <Text style={styles.composeIcon}>💬</Text>
               <Text style={styles.composeText}>New chat</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.composeItem} onPress={openGroupModal}>
+            <TouchableOpacity style={styles.composeItem} onPress={openGroupPicker}>
               <Text style={styles.composeIcon}>👥</Text>
               <Text style={styles.composeText}>New group</Text>
             </TouchableOpacity>
@@ -258,56 +279,28 @@ export default function ChatListScreen({ token, currentUser, onOpenChat, onLogou
         </TouchableOpacity>
       </Modal>
 
-      <Modal visible={modalVisible} transparent animationType="slide" onRequestClose={() => setModalVisible(false)}>
+      <Modal visible={!!groupNamingFor} transparent animationType="slide" onRequestClose={() => setGroupNamingFor(null)}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalBox}>
-            {mode === 'chat' ? (
-              <>
-                <Text style={styles.modalTitle}>Start a new chat</Text>
-                <TextInput
-                  style={styles.modalInput}
-                  placeholder="Enter phone number (e.g. +911234567890)"
-                  placeholderTextColor={colors.textMuted}
-                  keyboardType="phone-pad"
-                  value={phoneInput}
-                  onChangeText={setPhoneInput}
-                />
-                <View style={styles.modalButtons}>
-                  <TouchableOpacity onPress={() => setModalVisible(false)} style={styles.modalCancel}>
-                    <Text style={styles.modalCancelText}>Cancel</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity onPress={handleStartChat} style={styles.modalConfirm} disabled={starting}>
-                    <Text style={styles.modalConfirmText}>{starting ? 'Starting...' : 'Start'}</Text>
-                  </TouchableOpacity>
-                </View>
-              </>
-            ) : (
-              <>
-                <Text style={styles.modalTitle}>Create a group</Text>
-                <TextInput
-                  style={styles.modalInput}
-                  placeholder="Group name"
-                  placeholderTextColor={colors.textMuted}
-                  value={groupName}
-                  onChangeText={setGroupName}
-                />
-                <TextInput
-                  style={[styles.modalInput, { marginTop: spacing.sm }]}
-                  placeholder="Phone numbers, comma separated"
-                  placeholderTextColor={colors.textMuted}
-                  value={groupPhones}
-                  onChangeText={setGroupPhones}
-                />
-                <View style={styles.modalButtons}>
-                  <TouchableOpacity onPress={() => setModalVisible(false)} style={styles.modalCancel}>
-                    <Text style={styles.modalCancelText}>Cancel</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity onPress={handleCreateGroup} style={styles.modalConfirm} disabled={starting}>
-                    <Text style={styles.modalConfirmText}>{starting ? 'Creating...' : 'Create'}</Text>
-                  </TouchableOpacity>
-                </View>
-              </>
-            )}
+            <Text style={styles.modalTitle}>Name your group</Text>
+            <Text style={styles.modalSubtitle}>
+              {groupNamingFor?.length || 0} member{(groupNamingFor?.length || 0) === 1 ? '' : 's'} selected
+            </Text>
+            <TextInput
+              style={styles.modalInput}
+              placeholder="Group name"
+              placeholderTextColor={colors.textMuted}
+              value={groupNameInput}
+              onChangeText={setGroupNameInput}
+            />
+            <View style={styles.modalButtons}>
+              <TouchableOpacity onPress={() => setGroupNamingFor(null)} style={styles.modalCancel}>
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={handleCreateGroupFromPicker} style={styles.modalConfirm} disabled={starting}>
+                <Text style={styles.modalConfirmText}>{starting ? 'Creating...' : 'Create'}</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>
@@ -388,7 +381,8 @@ const styles = StyleSheet.create({
     backgroundColor: colors.background, padding: spacing.lg,
     borderTopLeftRadius: radii.md, borderTopRightRadius: radii.md
   },
-  modalTitle: { fontSize: 18, fontWeight: '600', marginBottom: spacing.md, color: colors.textPrimary },
+  modalTitle: { fontSize: 18, fontWeight: '600', marginBottom: 4, color: colors.textPrimary },
+  modalSubtitle: { fontSize: 13, color: colors.textSecondary, marginBottom: spacing.md },
   modalInput: {
     borderWidth: 1, borderColor: colors.border, borderRadius: radii.sm,
     padding: spacing.md, fontSize: 16, color: colors.textPrimary
