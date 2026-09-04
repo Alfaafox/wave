@@ -65,6 +65,13 @@ export default function ChatListScreen({ token, currentUser, onOpenChat, onLogou
     setRefreshing(false);
   };
 
+  const handleOverflowMenu = () => {
+    Alert.alert('Menu', '', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Log out', style: 'destructive', onPress: onLogout }
+    ]);
+  };
+
   const openChatPicker = () => {
     setComposeOpen(false);
     setPickerMode('chat');
@@ -180,7 +187,7 @@ export default function ChatListScreen({ token, currentUser, onOpenChat, onLogou
               </Text>
             </View>
           </TouchableOpacity>
-          <TouchableOpacity onPress={onLogout} style={styles.headerIconBtn}>
+          <TouchableOpacity onPress={handleOverflowMenu} style={styles.headerIconBtn}>
             <Text style={styles.headerActionIcon}>⋮</Text>
           </TouchableOpacity>
         </View>

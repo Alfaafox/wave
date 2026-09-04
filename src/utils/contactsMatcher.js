@@ -1,15 +1,8 @@
-import * as Contacts from 'expo-contacts';
+import * as Contacts from 'expo-contacts/legacy';
 import * as Crypto from 'expo-crypto';
 import { normalizePhone } from './normalizePhone';
 import { matchContacts } from './api';
 
-/**
- * Reads the device contact list, hashes each phone number, and asks the
- * backend which ones belong to registered Wave users. Raw numbers never
- * leave the device — only SHA-256 hashes are sent.
- *
- * Returns: { registered: [{ id, name, phone, contactName, profilePicture }], unregistered: [{ contactName, phone }] }
- */
 export async function getMatchedContacts(token) {
   const { status } = await Contacts.requestPermissionsAsync();
   if (status !== 'granted') {
@@ -51,13 +44,12 @@ export async function getMatchedContacts(token) {
   }
 
   const { matches } = await matchContacts(token, hashesToCheck);
-
   const matchedHashes = new Set(matches.map((m) => m.hash));
 
   const registered = matches.map((m) => ({
     id: m.id,
     name: m.name,
-    phone: m.phone, // authoritative — the matched user's own registered number
+    phone: m.phone,
     contactName: hashToContact[m.hash]?.contactName || m.name,
     profilePicture: m.profilePicture
   }));
