@@ -3,7 +3,6 @@ export const SERVER_URL = 'http://13.232.16.85:3000';
 async function request(path, options = {}) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 15000);
-
   try {
     const res = await fetch(`${SERVER_URL}${path}`, {
       ...options,
@@ -13,10 +12,8 @@ async function request(path, options = {}) {
         ...(options.headers || {})
       }
     });
-
     clearTimeout(timeoutId);
     const data = await res.json().catch(() => ({}));
-
     if (!res.ok) {
       throw new Error(data.error || 'Something went wrong');
     }
@@ -93,5 +90,13 @@ export function updateProfilePicture(token, base64Image) {
     method: 'PUT',
     headers: { Authorization: `Bearer ${token}` },
     body: JSON.stringify({ profilePicture: base64Image })
+  });
+}
+
+export function matchContacts(token, hashes) {
+  return request('/users/match-contacts', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ hashes })
   });
 }
