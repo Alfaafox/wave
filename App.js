@@ -9,14 +9,20 @@ import ChatListScreen from './src/screens/ChatListScreen';
 import ChatScreen from './src/screens/ChatScreen';
 import ProfileScreen from './src/screens/ProfileScreen';
 import CallScreen from './src/screens/CallScreen';
+import CallsScreen from './src/screens/CallsScreen';
+import UpdatesScreen from './src/screens/UpdatesScreen';
+import BottomTabBar from './src/components/BottomTabBar';
+import { colors } from './src/theme';
 import { disconnectSocket, connectSocket } from './src/utils/socket';
+
+const TAB_SCREENS = ['chatList', 'calls', 'updates'];
 
 export default function App() {
   const [loading, setLoading] = useState(true);
-  const [screen, setScreen] = useState('login'); // login | signup | chatList | chat | profile
+  const [screen, setScreen] = useState('login');
   const [token, setToken] = useState(null);
   const [currentUser, setCurrentUser] = useState(null);
-  const [activeChat, setActiveChat] = useState(null); // { conversationId, otherUser, isGroup, groupName }
+  const [activeChat, setActiveChat] = useState(null);
   const [socket, setSocket] = useState(null);
   const [incomingCall, setIncomingCall] = useState(null);
   const [outgoingCall, setOutgoingCall] = useState(null);
@@ -82,49 +88,66 @@ export default function App() {
   if (loading) {
     return (
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-        <ActivityIndicator size="large" color="#075E54" />
+        <ActivityIndicator size="large" color={colors.accent} />
       </View>
     );
   }
 
+  const showTabBar = TAB_SCREENS.includes(screen);
+
   return (
     <>
-      <StatusBar style="light" />
-      {screen === 'login' && (
-        <LoginScreen onLoggedIn={handleLoggedIn} goToSignup={() => setScreen('signup')} />
-      )}
-      {screen === 'signup' && (
-        <SignupScreen goToLogin={() => setScreen('login')} />
-      )}
-      {screen === 'chatList' && (
-        <ChatListScreen
-          token={token}
-          currentUser={currentUser}
-          onOpenChat={openChat}
-          onLogout={handleLogout}
-          onOpenProfile={() => setScreen('profile')}
-        />
-      )}
-      {screen === 'chat' && activeChat && (
-        <ChatScreen
-          token={token}
-          currentUser={currentUser}
-          conversationId={activeChat.conversationId}
-          otherUser={activeChat.otherUser}
-          isGroup={activeChat.isGroup}
-          groupName={activeChat.groupName}
-          onStartCall={startCall}
-          onBack={() => setScreen('chatList')}
-        />
-      )}
-      {screen === 'profile' && (
-        <ProfileScreen
-          token={token}
-          currentUser={currentUser}
-          onBack={() => setScreen('chatList')}
-          onLogout={handleLogout}
-        />
-      )}
+      <StatusBar style="dark" />
+      <View style={{ flex: 1 }}>
+        <View style={{ flex: 1 }}>
+          {screen === 'login' && (
+            <LoginScreen onLoggedIn={handleLoggedIn} goToSignup={() => setScreen('signup')} />
+          )}
+          {screen === 'signup' && (
+            <SignupScreen goToLogin={() => setScreen('login')} />
+          )}
+          {screen === 'chatList' && (
+            <ChatListScreen
+              token={token}
+              currentUser={currentUser}
+              onOpenChat={openChat}
+              onLogout={handleLogout}
+              onOpenProfile={() => setScreen('profile')}
+            />
+          )}
+          {screen === 'calls' && (
+            <CallsScreen currentUser={currentUser} />
+          )}
+          {screen === 'updates' && (
+            <UpdatesScreen currentUser={currentUser} />
+          )}
+          {screen === 'chat' && activeChat && (
+            <ChatScreen
+              token={token}
+              currentUser={currentUser}
+              conversationId={activeChat.conversationId}
+              otherUser={activeChat.otherUser}
+              isGroup={activeChat.isGroup}
+              groupName={activeChat.groupName}
+              onStartCall={startCall}
+              onBack={() => setScreen('chatList')}
+            />
+          )}
+          {screen === 'profile' && (
+            <ProfileScreen
+              token={token}
+              currentUser={currentUser}
+              onBack={() => setScreen('chatList')}
+              onLogout={handleLogout}
+            />
+          )}
+        </View>
+
+        {showTabBar && (
+          <BottomTabBar activeTab={screen} onTabPress={(tab) => setScreen(tab)} />
+        )}
+      </View>
+
       {socket && incomingCall && (
         <CallScreen socket={socket} callInfo={incomingCall} onEndCall={() => setIncomingCall(null)} />
       )}
