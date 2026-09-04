@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Image, Alert, ActivityIndicator } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { updateProfilePicture } from '../utils/api';
+import { colors, spacing, radii, shadow } from '../theme';
 
 export default function ProfileScreen({ token, currentUser, onBack, onLogout, onProfilePictureUpdated }) {
   const [uploading, setUploading] = useState(false);
@@ -45,13 +46,13 @@ export default function ProfileScreen({ token, currentUser, onBack, onLogout, on
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={onBack}>
-          <Text style={styles.backArrow}>{'<'}</Text>
+        <TouchableOpacity onPress={onBack} style={styles.backBtn}>
+          <Text style={styles.backArrow}>{'←'}</Text>
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Profile</Text>
       </View>
 
-      <TouchableOpacity style={styles.avatarWrap} onPress={changePicture} disabled={uploading}>
+      <TouchableOpacity style={styles.avatarWrap} onPress={changePicture} disabled={uploading} activeOpacity={0.8}>
         {localPicture ? (
           <Image source={{ uri: localPicture }} style={styles.avatarImage} />
         ) : (
@@ -62,28 +63,30 @@ export default function ProfileScreen({ token, currentUser, onBack, onLogout, on
           </View>
         )}
         {uploading ? (
-          <ActivityIndicator style={styles.avatarOverlay} color="#fff" />
+          <ActivityIndicator style={styles.avatarOverlay} color={colors.accent} />
         ) : (
           <Text style={styles.changeText}>Tap to change photo</Text>
         )}
       </TouchableOpacity>
 
-      <View style={styles.field}>
-        <Text style={styles.label}>Name</Text>
-        <Text style={styles.value}>{currentUser?.name}</Text>
+      <View style={styles.card}>
+        <View style={styles.field}>
+          <Text style={styles.label}>Name</Text>
+          <Text style={styles.value}>{currentUser?.name}</Text>
+        </View>
+        <View style={styles.divider} />
+        <View style={styles.field}>
+          <Text style={styles.label}>Email</Text>
+          <Text style={styles.value}>{currentUser?.email}</Text>
+        </View>
+        <View style={styles.divider} />
+        <View style={styles.field}>
+          <Text style={styles.label}>Phone number</Text>
+          <Text style={styles.value}>{currentUser?.phoneNumber || 'Not set'}</Text>
+        </View>
       </View>
 
-      <View style={styles.field}>
-        <Text style={styles.label}>Email</Text>
-        <Text style={styles.value}>{currentUser?.email}</Text>
-      </View>
-
-      <View style={styles.field}>
-        <Text style={styles.label}>Phone number</Text>
-        <Text style={styles.value}>{currentUser?.phoneNumber || 'Not set'}</Text>
-      </View>
-
-      <TouchableOpacity style={styles.logoutButton} onPress={onLogout}>
+      <TouchableOpacity style={styles.logoutButton} onPress={onLogout} activeOpacity={0.8}>
         <Text style={styles.logoutText}>Log out</Text>
       </TouchableOpacity>
     </View>
@@ -91,28 +94,40 @@ export default function ProfileScreen({ token, currentUser, onBack, onLogout, on
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#fff' },
+  container: { flex: 1, backgroundColor: colors.background },
   header: {
-    flexDirection: 'row', alignItems: 'center', padding: 16, paddingTop: 50,
-    backgroundColor: '#075E54'
+    flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.lg,
+    paddingTop: 50, paddingBottom: spacing.md,
+    backgroundColor: colors.headerBackground,
+    borderBottomWidth: 1, borderBottomColor: colors.headerBorder
   },
-  backArrow: { color: '#fff', fontSize: 22, marginRight: 14 },
-  headerTitle: { color: '#fff', fontSize: 18, fontWeight: '600' },
-  avatarWrap: { alignItems: 'center', marginVertical: 30 },
+  backBtn: { marginRight: spacing.md, padding: 2 },
+  backArrow: { color: colors.textPrimary, fontSize: 22 },
+  headerTitle: { color: colors.textPrimary, fontSize: 18, fontWeight: '600' },
+
+  avatarWrap: { alignItems: 'center', marginVertical: spacing.xxl },
   avatar: {
-    width: 90, height: 90, borderRadius: 45, backgroundColor: '#075E54',
+    width: 96, height: 96, borderRadius: 48, backgroundColor: colors.accent,
     justifyContent: 'center', alignItems: 'center'
   },
-  avatarImage: { width: 90, height: 90, borderRadius: 45 },
-  avatarText: { color: '#fff', fontSize: 36, fontWeight: '600' },
-  avatarOverlay: { marginTop: 8 },
-  changeText: { marginTop: 8, color: '#075E54', fontSize: 13 },
-  field: { paddingHorizontal: 24, marginBottom: 20 },
-  label: { fontSize: 13, color: '#888', marginBottom: 4 },
-  value: { fontSize: 17, color: '#111' },
-  logoutButton: {
-    marginTop: 30, marginHorizontal: 24, backgroundColor: '#fee',
-    borderRadius: 10, padding: 16, alignItems: 'center'
+  avatarImage: { width: 96, height: 96, borderRadius: 48 },
+  avatarText: { color: colors.textOnAccent, fontSize: 38, fontWeight: '600' },
+  avatarOverlay: { marginTop: spacing.sm },
+  changeText: { marginTop: spacing.sm, color: colors.accent, fontSize: 13, fontWeight: '500' },
+
+  card: {
+    marginHorizontal: spacing.lg, backgroundColor: colors.surface,
+    borderRadius: radii.md, paddingHorizontal: spacing.lg
   },
-  logoutText: { color: '#d32f2f', fontSize: 16, fontWeight: '600' }
+  field: { paddingVertical: spacing.md },
+  divider: { height: 1, backgroundColor: colors.divider },
+  label: { fontSize: 12, color: colors.textMuted, marginBottom: 4 },
+  value: { fontSize: 16, color: colors.textPrimary },
+
+  logoutButton: {
+    marginTop: spacing.xl, marginHorizontal: spacing.lg,
+    backgroundColor: colors.background, borderWidth: 1, borderColor: colors.danger,
+    borderRadius: radii.sm, padding: spacing.md, alignItems: 'center'
+  },
+  logoutText: { color: colors.danger, fontSize: 16, fontWeight: '600' }
 });
