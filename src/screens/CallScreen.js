@@ -2,6 +2,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Alert, Animated, Easing, Modal, StatusBar, Platform } from 'react-native';
 import { RTCView } from 'react-native-webrtc';
+import { Ionicons } from '@expo/vector-icons';
 import { createCallManager } from '../utils/callManager';
 
 function formatDuration(seconds) {
@@ -51,9 +52,9 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
     });
     callManagerRef.current = call;
 
-    // Accept/Accepted no longer fake "active" â€” just move to "connecting".
+    // Accept/Accepted no longer fake "active" - just move to "connecting".
     // For the CALLER, this is also the trigger to finally send the SDP
-    // offer â€” see the comment in callManager.js's startOutgoingCall for why
+    // offer - see the comment in callManager.js's startOutgoingCall for why
     // it's deliberately not sent any earlier than this.
     const handleAccepted = () => {
       setStatus('connecting');
@@ -137,7 +138,7 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
   }, [status]);
 
   const handleAccept = async () => {
-    setStatus('connecting'); // NOT 'active' â€” real media hasn't arrived yet
+    setStatus('connecting'); // NOT 'active' - real media hasn't arrived yet
     try {
       await callManagerRef.current.acceptIncomingCall(callInfo.callId, callInfo.fromUserId, callInfo.callType);
     } catch (err) {
@@ -168,8 +169,8 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
 
   const statusLabel =
     status === 'ringing' ? 'Incoming call' :
-    status === 'calling' ? 'Callingâ€¦' :
-    status === 'connecting' ? 'Connectingâ€¦' :
+    status === 'calling' ? 'Calling...' :
+    status === 'connecting' ? 'Connecting...' :
     formatDuration(duration);
 
   return (
@@ -189,7 +190,7 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
           />
         )}
 
-        {/* Center avatar/status â€” shown whenever we do NOT have real remote video yet */}
+        {/* Center avatar/status - shown whenever we do NOT have real remote video yet */}
         {!showingRemoteVideo && (
           <View style={styles.centerInfo}>
             <Animated.View style={[styles.avatarRing, { transform: [{ scale: pulseAnim }] }]}>
@@ -202,7 +203,7 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
           </View>
         )}
 
-        {/* Your own camera â€” ALWAYS a small corner preview, never full-screen */}
+        {/* Your own camera - ALWAYS a small corner preview, never full-screen */}
         {isVideo && localStream && !cameraOff && (
           <View style={styles.localVideoWrap}>
             <RTCView streamURL={localStream.toURL()} style={StyleSheet.absoluteFill} objectFit="cover" zOrder={1} />
@@ -221,13 +222,13 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
             <>
               <View style={styles.controlColumn}>
                 <TouchableOpacity style={[styles.callButton, styles.rejectButton]} onPress={handleReject}>
-                  <Text style={styles.callButtonText}>âœ•</Text>
+                  <Ionicons name="close" size={28} color="#fff" />
                 </TouchableOpacity>
                 <Text style={styles.controlLabel}>Decline</Text>
               </View>
               <View style={styles.controlColumn}>
                 <TouchableOpacity style={[styles.callButton, styles.acceptButton]} onPress={handleAccept}>
-                  <Text style={styles.callButtonText}>âœ“</Text>
+                  <Ionicons name="checkmark" size={28} color="#fff" />
                 </TouchableOpacity>
                 <Text style={styles.controlLabel}>Accept</Text>
               </View>
@@ -236,14 +237,14 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
             <>
               <View style={styles.controlColumn}>
                 <TouchableOpacity style={styles.smallButton} onPress={handleToggleMute}>
-                  <Text style={styles.smallButtonText}>{muted ? 'ðŸ”‡' : 'ðŸŽ¤'}</Text>
+                  <Ionicons name={muted ? 'mic-off' : 'mic'} size={22} color="#fff" />
                 </TouchableOpacity>
                 <Text style={styles.controlLabel}>{muted ? 'Unmute' : 'Mute'}</Text>
               </View>
               {isVideo && (
                 <View style={styles.controlColumn}>
                   <TouchableOpacity style={styles.smallButton} onPress={handleToggleCamera}>
-                    <Text style={styles.smallButtonText}>{cameraOff ? 'ðŸ“·' : 'ðŸ“¹'}</Text>
+                    <Ionicons name={cameraOff ? 'videocam-off' : 'videocam'} size={22} color="#fff" />
                   </TouchableOpacity>
                   <Text style={styles.controlLabel}>{cameraOff ? 'Start video' : 'Stop video'}</Text>
                 </View>
@@ -251,14 +252,14 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
               {isVideo && (
                 <View style={styles.controlColumn}>
                   <TouchableOpacity style={styles.smallButton} onPress={handleSwitchCamera}>
-                    <Text style={styles.smallButtonText}>ðŸ”„</Text>
+                    <Ionicons name="camera-reverse" size={22} color="#fff" />
                   </TouchableOpacity>
                   <Text style={styles.controlLabel}>Flip</Text>
                 </View>
               )}
               <View style={styles.controlColumn}>
                 <TouchableOpacity style={[styles.callButton, styles.rejectButton]} onPress={handleHangUp}>
-                  <Text style={styles.callButtonText}>âœ•</Text>
+                  <Ionicons name="close" size={28} color="#fff" />
                 </TouchableOpacity>
                 <Text style={styles.controlLabel}>End</Text>
               </View>

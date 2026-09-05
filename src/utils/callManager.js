@@ -1,9 +1,11 @@
-// src/utils/callManager.js
+﻿// src/utils/callManager.js
 //
 // Manages the WebRTC peer connection lifecycle for a single call.
 // Waits for TURN credentials from the server BEFORE building the peer
 // connection, and queues any offer/ICE candidates that arrive before the
-// connection is ready (network can outrace the user tapping Accept).
+// connection is ready OR before the remote description has been set
+// (network can outrace the user tapping Accept, or outrace the async
+// setRemoteDescription call itself).
 
 import { RTCPeerConnection, RTCIceCandidate, RTCSessionDescription, mediaDevices } from 'react-native-webrtc';
 
@@ -36,7 +38,7 @@ export function createCallManager(socket, { onLocalStream, onRemoteStream, onCal
     };
 
     connection.ontrack = (event) => {
-      console.log('[CALL] ontrack fired — kind:', event.track.kind, 'streams:', event.streams.length);
+      console.log('[CALL] ontrack fired - kind:', event.track.kind, 'streams:', event.streams.length);
       if (event.streams && event.streams[0]) {
         onRemoteStream(event.streams[0]);
       }
@@ -60,7 +62,7 @@ export function createCallManager(socket, { onLocalStream, onRemoteStream, onCal
         audio: true,
         video: callType === 'video' ? { facingMode: 'user' } : false,
       });
-      console.log('[CALL] local media acquired — tracks:', stream.getTracks().map(t => t.kind + ':' + t.readyState));
+      console.log('[CALL] local media acquired - tracks:', stream.getTracks().map(t => t.kind + ':' + t.readyState));
       localStream = stream;
       onLocalStream(stream);
       return stream;
@@ -70,30 +72,50 @@ export function createCallManager(socket, { onLocalStream, onRemoteStream, onCal
     }
   }
 
+  // Drains any ICE candidates that arrived before we had a remote
+  // description to apply them against. This MUST be called right after
+  // every successful setRemoteDescription - whether that happened via
+  // applyOffer (callee path) or handleAnswer (caller path) - because with
+  // the offer now deliberately delayed until after call:accepted (see
+  // startOutgoingCall below), there is no longer a single synchronous
+  // "flushPending" moment that reliably follows the offer being applied.
+  // Previously this draining only happened inside flushPending(), which
+  // assumed the offer had just been applied in the same call - that
+  // assumption broke once the offer moved to a separate, later code path,
+  // silently reintroducing "remote description was null" failures.
+  async function drainPendingIce() {
+    if (!pc || !pc.remoteDescription || pendingIce.length === 0) return;
+    const candidates = pendingIce;
+    pendingIce = [];
+    for (const candidate of candidates) {
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+      } catch (err) {
+        console.warn('[CALL] Failed to add queued ICE candidate', err);
+      }
+    }
+  }
+
   async function flushPending() {
     if (pendingOffer) {
       const offer = pendingOffer;
       pendingOffer = null;
       await applyOffer(offer);
-    }
-    if (pendingIce.length > 0) {
-      const candidates = pendingIce;
-      pendingIce = [];
-      for (const candidate of candidates) {
-        try {
-          await pc.addIceCandidate(new RTCIceCandidate(candidate));
-        } catch (err) {
-          console.warn('Failed to add queued ICE candidate', err);
-        }
-      }
+      // applyOffer already drains pendingIce internally now, no need to repeat here.
     }
   }
 
   async function applyOffer(offer) {
-    await pc.setRemoteDescription(new RTCSessionDescription(offer));
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-    socket.emit('call:answer', { callId, targetUserId: otherUserId, answer });
+    try {
+      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      socket.emit('call:answer', { callId, targetUserId: otherUserId, answer });
+      await drainPendingIce();
+    } catch (err) {
+      console.log('[CALL] ERROR in applyOffer:', err?.message, err?.stack);
+      throw err;
+    }
   }
 
   async function startOutgoingCall(targetUserId, callType) {
@@ -111,15 +133,28 @@ export function createCallManager(socket, { onLocalStream, onRemoteStream, onCal
         pc = buildPeerConnection(response.turnCreds);
         localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
 
-        await flushPending();
-
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        socket.emit('call:offer', { callId, targetUserId, offer });
-
+        // NOTE: the offer is deliberately NOT created/sent here. Sending it
+        // immediately raced against the receiver's CallScreen mounting and
+        // registering its 'call:offer' listener - if the offer arrived on
+        // the wire before that listener existed, it was silently dropped
+        // forever. The offer is now sent from sendOffer(), called once
+        // 'call:accepted' arrives, guaranteeing the receiver's listener
+        // already exists.
         resolve({ callId });
       });
     });
+  }
+
+  async function sendOffer() {
+    if (!pc) return;
+    try {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      socket.emit('call:offer', { callId, targetUserId: otherUserId, offer });
+    } catch (err) {
+      console.log('[CALL] ERROR in sendOffer:', err?.message, err?.stack);
+      throw err;
+    }
   }
 
   async function acceptIncomingCall(incomingCallId, fromUserId, callType) {
@@ -137,6 +172,10 @@ export function createCallManager(socket, { onLocalStream, onRemoteStream, onCal
         pc = buildPeerConnection(response.turnCreds);
         localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
 
+        // Only relevant if an offer somehow already arrived and was queued
+        // (e.g. a retry/edge case) - the normal path is the offer arriving
+        // shortly after this, via the standalone handleOffer() below, which
+        // now drains ICE itself via applyOffer.
         await flushPending();
         resolve();
       });
@@ -153,18 +192,24 @@ export function createCallManager(socket, { onLocalStream, onRemoteStream, onCal
 
   async function handleAnswer(answer) {
     if (!pc) return;
-    await pc.setRemoteDescription(new RTCSessionDescription(answer));
+    try {
+      await pc.setRemoteDescription(new RTCSessionDescription(answer));
+      await drainPendingIce();
+    } catch (err) {
+      console.log('[CALL] ERROR in handleAnswer:', err?.message, err?.stack);
+      throw err;
+    }
   }
 
   async function handleIceCandidate(candidate) {
-    if (!pc) {
+    if (!pc || !pc.remoteDescription) {
       pendingIce.push(candidate);
       return;
     }
     try {
       await pc.addIceCandidate(new RTCIceCandidate(candidate));
     } catch (err) {
-      console.warn('Failed to add ICE candidate', err);
+      console.warn('[CALL] Failed to add ICE candidate', err);
     }
   }
 
@@ -218,6 +263,7 @@ export function createCallManager(socket, { onLocalStream, onRemoteStream, onCal
 
   return {
     startOutgoingCall,
+    sendOffer,
     acceptIncomingCall,
     handleOffer,
     handleAnswer,
@@ -229,3 +275,4 @@ export function createCallManager(socket, { onLocalStream, onRemoteStream, onCal
     cleanup,
   };
 }
+
