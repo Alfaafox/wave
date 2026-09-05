@@ -165,6 +165,8 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
   const otherName = callInfo.mode === 'incoming' ? callInfo.fromName : callInfo.targetName;
   const isVideo = callInfo.callType === 'video';
   const showingRemoteVideo = isVideo && remoteStream && status === 'active' && remoteVideoTrackCount > 0;
+
+  console.log('[CALL][RENDER] status:', status, '| isVideo:', isVideo, '| remoteStream exists:', !!remoteStream, '| remoteVideoTrackCount:', remoteVideoTrackCount, '| showingRemoteVideo:', showingRemoteVideo);
   const showControls = status !== 'ringing';
 
   const statusLabel =
