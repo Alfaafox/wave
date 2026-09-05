@@ -1,4 +1,4 @@
-// src/screens/CallScreen.js
+﻿// src/screens/CallScreen.js
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Alert, Animated, Easing, Modal, StatusBar, Platform } from 'react-native';
 import { RTCView } from 'react-native-webrtc';
@@ -51,11 +51,39 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
     });
     callManagerRef.current = call;
 
-    // Accept/Accepted no longer fake "active" — just move to "connecting"
-    const handleAccepted = () => setStatus('connecting');
-    const handleAnswer = async ({ answer }) => { await call.handleAnswer(answer); };
-    const handleOffer = async ({ offer }) => { await call.handleOffer(offer); };
-    const handleIceCandidate = async ({ candidate }) => { await call.handleIceCandidate(candidate); };
+    // Accept/Accepted no longer fake "active" â€” just move to "connecting".
+    // For the CALLER, this is also the trigger to finally send the SDP
+    // offer â€” see the comment in callManager.js's startOutgoingCall for why
+    // it's deliberately not sent any earlier than this.
+    const handleAccepted = () => {
+      setStatus('connecting');
+      if (callInfo.mode === 'outgoing') {
+        call.sendOffer().catch((err) => {
+          console.log('[CALL] ERROR in sendOffer:', err?.message, err?.stack);
+        });
+      }
+    };
+    const handleAnswer = async ({ answer }) => {
+      try {
+        await call.handleAnswer(answer);
+      } catch (err) {
+        console.log('[CALL] ERROR in handleAnswer:', err?.message, err?.stack);
+      }
+    };
+    const handleOffer = async ({ offer }) => {
+      try {
+        await call.handleOffer(offer);
+      } catch (err) {
+        console.log('[CALL] ERROR in handleOffer:', err?.message, err?.stack);
+      }
+    };
+    const handleIceCandidate = async ({ candidate }) => {
+      try {
+        await call.handleIceCandidate(candidate);
+      } catch (err) {
+        console.log('[CALL] ERROR in handleIceCandidate:', err?.message, err?.stack);
+      }
+    };
     const handleRejected = () => { Alert.alert('Call declined'); onEndCall(); };
     const handleEnded = () => { call.cleanup(); onEndCall(); };
 
@@ -68,6 +96,7 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
 
     if (callInfo.mode === 'outgoing') {
       call.startOutgoingCall(callInfo.targetUserId, callInfo.callType).catch((err) => {
+        console.log('[CALL] ERROR in startOutgoingCall:', err?.message, err?.stack);
         Alert.alert('Call failed', err.message);
         onEndCall();
       });
@@ -108,8 +137,14 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
   }, [status]);
 
   const handleAccept = async () => {
-    setStatus('connecting'); // NOT 'active' — real media hasn't arrived yet
-    await callManagerRef.current.acceptIncomingCall(callInfo.callId, callInfo.fromUserId, callInfo.callType);
+    setStatus('connecting'); // NOT 'active' â€” real media hasn't arrived yet
+    try {
+      await callManagerRef.current.acceptIncomingCall(callInfo.callId, callInfo.fromUserId, callInfo.callType);
+    } catch (err) {
+      console.log('[CALL] ERROR in acceptIncomingCall:', err?.message, err?.stack);
+      Alert.alert('Could not accept call', err.message);
+      onEndCall();
+    }
   };
 
   const handleReject = () => {
@@ -133,8 +168,8 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
 
   const statusLabel =
     status === 'ringing' ? 'Incoming call' :
-    status === 'calling' ? 'Calling…' :
-    status === 'connecting' ? 'Connecting…' :
+    status === 'calling' ? 'Callingâ€¦' :
+    status === 'connecting' ? 'Connectingâ€¦' :
     formatDuration(duration);
 
   return (
@@ -150,10 +185,11 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
             streamURL={remoteStream.toURL()}
             style={styles.remoteVideo}
             objectFit="cover"
+            zOrder={0}
           />
         )}
 
-        {/* Center avatar/status — shown whenever we do NOT have real remote video yet */}
+        {/* Center avatar/status â€” shown whenever we do NOT have real remote video yet */}
         {!showingRemoteVideo && (
           <View style={styles.centerInfo}>
             <Animated.View style={[styles.avatarRing, { transform: [{ scale: pulseAnim }] }]}>
@@ -166,7 +202,7 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
           </View>
         )}
 
-        {/* Your own camera — ALWAYS a small corner preview, never full-screen */}
+        {/* Your own camera â€” ALWAYS a small corner preview, never full-screen */}
         {isVideo && localStream && !cameraOff && (
           <View style={styles.localVideoWrap}>
             <RTCView streamURL={localStream.toURL()} style={StyleSheet.absoluteFill} objectFit="cover" zOrder={1} />
@@ -185,13 +221,13 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
             <>
               <View style={styles.controlColumn}>
                 <TouchableOpacity style={[styles.callButton, styles.rejectButton]} onPress={handleReject}>
-                  <Text style={styles.callButtonText}>✕</Text>
+                  <Text style={styles.callButtonText}>âœ•</Text>
                 </TouchableOpacity>
                 <Text style={styles.controlLabel}>Decline</Text>
               </View>
               <View style={styles.controlColumn}>
                 <TouchableOpacity style={[styles.callButton, styles.acceptButton]} onPress={handleAccept}>
-                  <Text style={styles.callButtonText}>✓</Text>
+                  <Text style={styles.callButtonText}>âœ“</Text>
                 </TouchableOpacity>
                 <Text style={styles.controlLabel}>Accept</Text>
               </View>
@@ -200,14 +236,14 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
             <>
               <View style={styles.controlColumn}>
                 <TouchableOpacity style={styles.smallButton} onPress={handleToggleMute}>
-                  <Text style={styles.smallButtonText}>{muted ? '🔇' : '🎤'}</Text>
+                  <Text style={styles.smallButtonText}>{muted ? 'ðŸ”‡' : 'ðŸŽ¤'}</Text>
                 </TouchableOpacity>
                 <Text style={styles.controlLabel}>{muted ? 'Unmute' : 'Mute'}</Text>
               </View>
               {isVideo && (
                 <View style={styles.controlColumn}>
                   <TouchableOpacity style={styles.smallButton} onPress={handleToggleCamera}>
-                    <Text style={styles.smallButtonText}>{cameraOff ? '📷' : '📹'}</Text>
+                    <Text style={styles.smallButtonText}>{cameraOff ? 'ðŸ“·' : 'ðŸ“¹'}</Text>
                   </TouchableOpacity>
                   <Text style={styles.controlLabel}>{cameraOff ? 'Start video' : 'Stop video'}</Text>
                 </View>
@@ -215,14 +251,14 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
               {isVideo && (
                 <View style={styles.controlColumn}>
                   <TouchableOpacity style={styles.smallButton} onPress={handleSwitchCamera}>
-                    <Text style={styles.smallButtonText}>🔄</Text>
+                    <Text style={styles.smallButtonText}>ðŸ”„</Text>
                   </TouchableOpacity>
                   <Text style={styles.controlLabel}>Flip</Text>
                 </View>
               )}
               <View style={styles.controlColumn}>
                 <TouchableOpacity style={[styles.callButton, styles.rejectButton]} onPress={handleHangUp}>
-                  <Text style={styles.callButtonText}>✕</Text>
+                  <Text style={styles.callButtonText}>âœ•</Text>
                 </TouchableOpacity>
                 <Text style={styles.controlLabel}>End</Text>
               </View>
@@ -278,3 +314,4 @@ const styles = StyleSheet.create({
   },
   smallButtonText: { fontSize: 22 },
 });
+
