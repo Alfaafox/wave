@@ -8,6 +8,7 @@
 // setRemoteDescription call itself).
 
 import { RTCPeerConnection, RTCIceCandidate, RTCSessionDescription, mediaDevices } from 'react-native-webrtc';
+import ExpoCallAudioModule from '../../modules/expo-call-audio/src/ExpoCallAudioModule';
 
 export function createCallManager(socket, { onLocalStream, onRemoteStream, onCallEnded, onCallState }) {
   let pc = null;
@@ -56,8 +57,32 @@ export function createCallManager(socket, { onLocalStream, onRemoteStream, onCal
     return connection;
   }
 
+  // FIX ATTEMPT #1 (did not work): expo-audio's setAudioModeAsync ran
+  // without error but had zero effect - it configures a completely
+  // different Android audio subsystem than the one WebRTC actually uses.
+  //
+  // FIX ATTEMPT #2 (did not work): react-native-incall-manager resolved
+  // as null at runtime - confirmed via npx expo-doctor as "untested" on
+  // this project's New Architecture setup, and its native module never
+  // linked despite a clean rebuild.
+  //
+  // FIX ATTEMPT #3 (this one): a small custom Expo Module
+  // (modules/expo-call-audio), built with the Expo Modules API - which is
+  // designed for New Architecture from the ground up, unlike community
+  // bridge-style libraries. Directly sets Android's AudioManager into
+  // MODE_IN_COMMUNICATION and requests proper audio focus.
+  function claimCallAudioSession(callType) {
+    try {
+      ExpoCallAudioModule.startCallAudio(callType === 'video');
+      console.log('[CALL] ExpoCallAudio started for', callType, 'call.');
+    } catch (err) {
+      console.log('[CALL] WARNING - ExpoCallAudio.startCallAudio failed:', err.message);
+    }
+  }
+
   async function getLocalMedia(callType) {
     try {
+      claimCallAudioSession(callType);
       const stream = await mediaDevices.getUserMedia({
         audio: true,
         video: callType === 'video' ? { facingMode: 'user' } : false,
@@ -252,6 +277,13 @@ export function createCallManager(socket, { onLocalStream, onRemoteStream, onCal
     }
     pendingOffer = null;
     pendingIce = [];
+    // Release the call-specific audio routing so it doesn't linger and
+    // affect anything after the call ends (speaker mode, audio focus, etc).
+    try {
+      ExpoCallAudioModule.stopCallAudio();
+    } catch (err) {
+      console.log('[CALL] WARNING - ExpoCallAudio.stopCallAudio failed:', err.message);
+    }
   }
 
   function hangUp() {

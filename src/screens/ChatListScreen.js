@@ -1,17 +1,18 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import {
   View, Text, FlatList, TouchableOpacity, StyleSheet,
-  TextInput, Modal, Alert, RefreshControl
+  TextInput, Modal, Alert, RefreshControl, Image
 } from 'react-native';
 import { getConversations, startConversation, createGroup, deleteConversation } from '../utils/api';
 import { connectSocket } from '../utils/socket';
 import { colors, spacing, radii, typography, shadow } from '../theme';
 import ContactPickerScreen from './ContactPickerScreen';
+import { Ionicons } from '@expo/vector-icons';
 
 function previewText(lastMessage) {
   if (!lastMessage) return 'No messages yet';
-  if (lastMessage.message_type === 'image') return '📷 Photo';
-  if (lastMessage.message_type === 'audio') return '🎤 Voice message';
+  if (lastMessage.message_type === 'image') return 'Photo';
+  if (lastMessage.message_type === 'audio') return 'Voice message';
   return lastMessage.content;
 }
 
@@ -181,20 +182,24 @@ export default function ChatListScreen({ token, currentUser, onOpenChat, onLogou
         <Text style={styles.headerTitle}>Wave</Text>
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
           <TouchableOpacity onPress={onOpenProfile} style={styles.headerIconBtn}>
-            <View style={styles.headerAvatar}>
-              <Text style={styles.headerAvatarText}>
-                {(currentUser?.name || '?').charAt(0).toUpperCase()}
-              </Text>
-            </View>
+            {currentUser?.profilePicture ? (
+              <Image source={{ uri: currentUser.profilePicture }} style={styles.headerAvatarImage} />
+            ) : (
+              <View style={styles.headerAvatar}>
+                <Text style={styles.headerAvatarText}>
+                  {(currentUser?.name || '?').charAt(0).toUpperCase()}
+                </Text>
+              </View>
+            )}
           </TouchableOpacity>
           <TouchableOpacity onPress={handleOverflowMenu} style={styles.headerIconBtn}>
-            <Text style={styles.headerActionIcon}>⋮</Text>
+            <Ionicons name="ellipsis-vertical" size={20} color={colors.textSecondary} />
           </TouchableOpacity>
         </View>
       </View>
 
       <View style={styles.searchBar}>
-        <Text style={styles.searchIcon}>🔍</Text>
+        <Ionicons name="search" size={16} color={colors.textMuted} style={{ marginRight: spacing.sm }} />
         <TextInput
           style={styles.searchInput}
           placeholder="Search"
@@ -268,18 +273,18 @@ export default function ChatListScreen({ token, currentUser, onOpenChat, onLogou
       />
 
       <TouchableOpacity style={styles.fab} onPress={() => setComposeOpen(true)} activeOpacity={0.85}>
-        <Text style={styles.fabText}>✎</Text>
+        <Ionicons name="create-outline" size={24} color={colors.textOnAccent} />
       </TouchableOpacity>
 
       <Modal visible={composeOpen} transparent animationType="fade" onRequestClose={() => setComposeOpen(false)}>
         <TouchableOpacity style={styles.composeOverlay} activeOpacity={1} onPress={() => setComposeOpen(false)}>
           <View style={styles.composeSheet}>
             <TouchableOpacity style={styles.composeItem} onPress={openChatPicker}>
-              <Text style={styles.composeIcon}>💬</Text>
+              <Ionicons name="chatbubble-outline" size={18} color={colors.textPrimary} style={{ marginRight: spacing.md }} />
               <Text style={styles.composeText}>New chat</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.composeItem} onPress={openGroupPicker}>
-              <Text style={styles.composeIcon}>👥</Text>
+              <Ionicons name="people-outline" size={18} color={colors.textPrimary} style={{ marginRight: spacing.md }} />
               <Text style={styles.composeText}>New group</Text>
             </TouchableOpacity>
           </View>
@@ -325,11 +330,11 @@ const styles = StyleSheet.create({
   },
   headerTitle: { ...typography.headerTitle, color: colors.textPrimary },
   headerIconBtn: { marginLeft: spacing.md, padding: 2 },
-  headerActionIcon: { fontSize: 22, color: colors.textSecondary },
   headerAvatar: {
     width: 32, height: 32, borderRadius: 16, backgroundColor: colors.accent,
     justifyContent: 'center', alignItems: 'center'
   },
+  headerAvatarImage: { width: 32, height: 32, borderRadius: 16 },
   headerAvatarText: { color: colors.textOnAccent, fontSize: 14, fontWeight: '700' },
 
   searchBar: {
@@ -337,7 +342,6 @@ const styles = StyleSheet.create({
     marginHorizontal: spacing.lg, marginTop: spacing.md, marginBottom: spacing.sm,
     borderRadius: radii.pill, paddingHorizontal: spacing.md, height: 40
   },
-  searchIcon: { fontSize: 14, marginRight: spacing.sm, opacity: 0.5 },
   searchInput: { flex: 1, fontSize: 15, color: colors.textPrimary, padding: 0 },
 
   empty: { textAlign: 'center', marginTop: 60, color: colors.textMuted },
@@ -372,7 +376,6 @@ const styles = StyleSheet.create({
     borderRadius: 28, backgroundColor: colors.accent, justifyContent: 'center',
     alignItems: 'center', ...shadow.md
   },
-  fabText: { color: colors.textOnAccent, fontSize: 22 },
 
   composeOverlay: { flex: 1, backgroundColor: colors.overlay, justifyContent: 'flex-end' },
   composeSheet: {
@@ -380,7 +383,6 @@ const styles = StyleSheet.create({
     borderRadius: radii.md, paddingVertical: spacing.sm, ...shadow.md
   },
   composeItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14, paddingHorizontal: spacing.lg },
-  composeIcon: { fontSize: 18, marginRight: spacing.md },
   composeText: { fontSize: 16, color: colors.textPrimary, fontWeight: '500' },
 
   modalOverlay: { flex: 1, backgroundColor: colors.overlay, justifyContent: 'flex-end' },

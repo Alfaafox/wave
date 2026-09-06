@@ -1,9 +1,11 @@
 ﻿// src/screens/CallScreen.js
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Alert, Animated, Easing, Modal, StatusBar, Platform } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Alert, Animated, Easing, StatusBar, Platform, Dimensions, Vibration } from 'react-native';
 import { RTCView } from 'react-native-webrtc';
 import { Ionicons } from '@expo/vector-icons';
 import { createCallManager } from '../utils/callManager';
+import ExpoCallAudioModule from '../../modules/expo-call-audio/src/ExpoCallAudioModule';
+import { useAudioPlayer } from 'expo-audio';
 
 function formatDuration(seconds) {
   const m = Math.floor(seconds / 60).toString().padStart(2, '0');
@@ -25,11 +27,17 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
   // Keying RTCView on this count forces a clean remount the moment video shows up.
   const [remoteVideoTrackCount, setRemoteVideoTrackCount] = useState(0);
   const [muted, setMuted] = useState(false);
+  const [speakerOn, setSpeakerOn] = useState(false);
   const [cameraOff, setCameraOff] = useState(false);
   const [duration, setDuration] = useState(0);
   const callManagerRef = useRef(null);
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const durationTimerRef = useRef(null);
+  // Requires a ringtone file at assets/ringtone.mp3 - not something
+  // this patch can generate. Any short notification/ringtone mp3 works;
+  // drop it in before reloading, or this require() will fail to resolve.
+  // RINGTONE_DISABLED_NO_ASSET: add assets/ringtone.mp3, then uncomment the line below.
+  // const ringtonePlayer = useAudioPlayer(require('../../assets/ringtone.mp3'));
 
   useEffect(() => {
     const call = createCallManager(socket, {
@@ -137,6 +145,24 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
     return () => clearInterval(durationTimerRef.current);
   }, [status]);
 
+  // Ringtone + vibration, incoming calls only (status is only ever
+  // 'ringing' on the receiving side).
+  useEffect(() => {
+    if (status !== 'ringing') return;
+
+    Vibration.vibrate([0, 500, 500], true);
+    // ringtonePlayer.seekTo(0); // enable once assets/ringtone.mp3 exists
+    // ringtonePlayer.play();
+    const replayInterval = setInterval(() => {
+    }, 4000);
+
+    return () => {
+      Vibration.cancel();
+      clearInterval(replayInterval);
+      // ringtonePlayer.pause();
+    };
+  }, [status]);
+
   const handleAccept = async () => {
     setStatus('connecting'); // NOT 'active' - real media hasn't arrived yet
     try {
@@ -160,6 +186,15 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
 
   const handleToggleMute = () => setMuted(!!callManagerRef.current?.toggleMute());
   const handleToggleCamera = () => setCameraOff(!!callManagerRef.current?.toggleCamera());
+  const handleToggleSpeaker = () => {
+    const newValue = !speakerOn;
+    try {
+      ExpoCallAudioModule.setSpeakerphoneOn(newValue);
+      setSpeakerOn(newValue);
+    } catch (err) {
+      console.log('[CALL] WARNING - setSpeakerphoneOn failed:', err.message);
+    }
+  };
   const handleSwitchCamera = () => callManagerRef.current?.switchCamera();
 
   const otherName = callInfo.mode === 'incoming' ? callInfo.fromName : callInfo.targetName;
@@ -176,7 +211,7 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
     formatDuration(duration);
 
   return (
-    <Modal visible animationType="fade" statusBarTranslucent presentationStyle="fullScreen" onRequestClose={() => {}}>
+    <View style={styles.fullScreenOverlay}>
       <StatusBar barStyle="light-content" backgroundColor="#000" />
       <View style={styles.container}>
         {/* Remote video fills the screen ONLY once truly active AND a video track is present.
@@ -243,6 +278,14 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
                 </TouchableOpacity>
                 <Text style={styles.controlLabel}>{muted ? 'Unmute' : 'Mute'}</Text>
               </View>
+              {!isVideo && (
+                <View style={styles.controlColumn}>
+                  <TouchableOpacity style={styles.smallButton} onPress={handleToggleSpeaker}>
+                    <Ionicons name={speakerOn ? 'volume-high' : 'volume-medium'} size={22} color="#fff" />
+                  </TouchableOpacity>
+                  <Text style={styles.controlLabel}>{speakerOn ? 'Speaker on' : 'Speaker off'}</Text>
+                </View>
+              )}
               {isVideo && (
                 <View style={styles.controlColumn}>
                   <TouchableOpacity style={styles.smallButton} onPress={handleToggleCamera}>
@@ -269,15 +312,42 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
           )}
         </View>
       </View>
-    </Modal>
+    </View>
   );
 }
 
 const TOP_INSET = Platform.OS === 'android' ? (StatusBar.currentHeight || 24) + 10 : 54;
 
 const styles = StyleSheet.create({
+  // Replaces the old <Modal> wrapper. On Android, RN's Modal always renders
+  // inside a native Dialog window regardless of presentationStyle - and
+  // hardware-accelerated SurfaceViews (which is what RTCView is backed by)
+  // are known to composite unreliably inside Android Dialogs. This plain
+  // absolutely-positioned View achieves the same "overlay everything"
+  // effect without that Dialog window in between.
+  fullScreenOverlay: {
+    position: 'absolute',
+    top: 0, left: 0, right: 0, bottom: 0,
+    zIndex: 9999,
+    elevation: 9999,
+  },
   container: { flex: 1, backgroundColor: '#0B0C10' },
-  remoteVideo: { ...StyleSheet.absoluteFillObject },
+  // FIX: previously this only used StyleSheet.absoluteFillObject, which sets
+  // top/left/right/bottom:0 but gives no EXPLICIT numeric width/height. A
+  // diagnostic test (temporarily rendering the local stream in this exact
+  // slot) proved that even a known-working stream would not render here,
+  // while the small corner preview (which DOES use explicit pixel
+  // width/height) always worked. That isolates the bug to this specific
+  // style, not to the remote stream, network, or WebRTC layer at all -
+  // Android's native video surface can fail to size itself correctly from
+  // inset-only positioning with no concrete numeric dimensions to measure.
+  remoteVideo: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    width: Dimensions.get('window').width,
+    height: Dimensions.get('window').height,
+  },
   localVideoWrap: {
     position: 'absolute', top: TOP_INSET, right: 16, width: 100, height: 140,
     borderRadius: 16, overflow: 'hidden', backgroundColor: '#1c1c1e',

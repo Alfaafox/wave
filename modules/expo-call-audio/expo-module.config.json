@@ -1,0 +1,9 @@
+{
+  "platforms": ["apple", "android", "web"],
+  "apple": {
+    "modules": ["ExpoCallAudioModule"]
+  },
+  "android": {
+    "modules": ["expo.modules.callaudio.ExpoCallAudioModule"]
+  }
+}

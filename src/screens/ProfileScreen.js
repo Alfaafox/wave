@@ -3,6 +3,7 @@ import { View, Text, TouchableOpacity, StyleSheet, Image, Alert, ActivityIndicat
 import * as ImagePicker from 'expo-image-picker';
 import { updateProfilePicture } from '../utils/api';
 import { colors, spacing, radii, shadow } from '../theme';
+import { Ionicons } from '@expo/vector-icons';
 
 export default function ProfileScreen({ token, currentUser, onBack, onLogout, onProfilePictureUpdated }) {
   const [uploading, setUploading] = useState(false);
@@ -47,7 +48,7 @@ export default function ProfileScreen({ token, currentUser, onBack, onLogout, on
     <View style={styles.container}>
       <View style={styles.header}>
         <TouchableOpacity onPress={onBack} style={styles.backBtn}>
-          <Text style={styles.backArrow}>{'←'}</Text>
+          <Ionicons name="arrow-back" size={22} color={colors.textPrimary} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Profile</Text>
       </View>
@@ -102,7 +103,6 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1, borderBottomColor: colors.headerBorder
   },
   backBtn: { marginRight: spacing.md, padding: 2 },
-  backArrow: { color: colors.textPrimary, fontSize: 22 },
   headerTitle: { color: colors.textPrimary, fontSize: 18, fontWeight: '600' },
 
   avatarWrap: { alignItems: 'center', marginVertical: spacing.xxl },

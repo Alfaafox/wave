@@ -2,23 +2,27 @@ import React, { useEffect, useState, useRef } from 'react';
 import {
   View, Text, FlatList, TextInput, TouchableOpacity, StyleSheet,
   KeyboardAvoidingView, Platform, Image, Alert, ActivityIndicator,
-  Modal, Clipboard, Animated, ScrollView
+  Modal, Clipboard, Animated, Keyboard
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as ImagePicker from 'expo-image-picker';
-import * as MediaLibrary from 'expo-media-library';
+import * as MediaLibrary from 'expo-media-library/legacy';
 import * as FileSystem from 'expo-file-system/legacy';
 import {
   AudioModule, RecordingPresets, setAudioModeAsync,
   useAudioRecorder, useAudioRecorderState, useAudioPlayer, useAudioPlayerStatus
 } from 'expo-audio';
-import { getMessages, getConversations } from '../utils/api';
+import { getMessages, getConversations, SERVER_URL } from '../utils/api';
 import { connectSocket } from '../utils/socket';
 import { ReactionPicker, ReactionPills } from '../components/MessageReactions';
+import MediaPickerSheet from '../components/MediaPickerSheet';
+import ImageViewerModal from '../components/ImageViewerModal';
 import { colors, spacing, radii, typography, shadow } from '../theme';
+import { Ionicons } from '@expo/vector-icons';
+import { WALLPAPER_STORAGE_KEY, AUTOSAVE_STORAGE_KEY, getWallpaperColor } from '../utils/chatPreferences';
 
 const EDIT_DELETE_WINDOW_MS = 15 * 60 * 1000;
 
-const QUICK_EMOJIS = ['😀','😂','😍','😢','😮','😡','👍','👎','❤️','🔥','🎉','🙏','😅','😎','🤔','😴','👏','💯','✅','❌','🥳','😭','😳','🤝'];
 
 function AudioBubble({ uri, isMine }) {
   const player = useAudioPlayer(uri);
@@ -28,7 +32,12 @@ function AudioBubble({ uri, isMine }) {
   };
   return (
     <TouchableOpacity style={styles.audioRow} onPress={toggle}>
-      <Text style={styles.audioIcon}>{status.playing ? '⏸' : '▶️'}</Text>
+      <Ionicons
+        name={status.playing ? 'pause' : 'play'}
+        size={20}
+        color={isMine ? colors.bubbleOutgoingText : colors.bubbleIncomingText}
+        style={styles.audioIcon}
+      />
       <Text style={[styles.audioLabel, { color: isMine ? colors.bubbleOutgoingText : colors.bubbleIncomingText }]}>
         Voice message
       </Text>
@@ -50,6 +59,10 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
   const [forwardTargets, setForwardTargets] = useState([]);
   const [reactionPickerFor, setReactionPickerFor] = useState(null);
   const [showEmojiBar, setShowEmojiBar] = useState(false);
+  const [viewerImage, setViewerImage] = useState(null);
+  const [savingViewerImage, setSavingViewerImage] = useState(false);
+  const [wallpaperColor, setWallpaperColor] = useState(null);
+  const autoSaveRef = useRef(false);
   const listRef = useRef(null);
   const socketRef = useRef(null);
   const typingTimeoutRef = useRef(null);
@@ -63,6 +76,17 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
       const status = await AudioModule.requestRecordingPermissionsAsync();
       if (!status.granted) console.warn('Microphone permission not granted');
       await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: true });
+    })();
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      const [savedWallpaper, savedAutoSave] = await Promise.all([
+        AsyncStorage.getItem(WALLPAPER_STORAGE_KEY),
+        AsyncStorage.getItem(AUTOSAVE_STORAGE_KEY),
+      ]);
+      setWallpaperColor(getWallpaperColor(savedWallpaper));
+      autoSaveRef.current = savedAutoSave === 'true';
     })();
   }, []);
 
@@ -98,6 +122,12 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
       if (msg.conversationId === conversationId) {
         setMessages((prev) => [...prev, msg]);
         setIsOtherTyping(false);
+
+        if (autoSaveRef.current && msg.message_type === 'image' && msg.user_id !== currentUser.id) {
+          MediaLibrary.saveToLibraryAsync(msg.content).catch((err) => {
+            console.warn('Auto-save failed:', err.message);
+          });
+        }
       }
     };
     const handleTyping = ({ conversationId: cid, userId }) => {
@@ -188,6 +218,15 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
 
   const insertEmoji = (emoji) => setInput((prev) => prev + emoji);
 
+  // GIFs and stickers are both just image URLs as far as this app's message
+  // schema and rendering are concerned (see the message_type === 'image'
+  // branch in the FlatList renderItem below) - so picking one just sends it
+  // as a normal image message. No backend/db schema change needed for this.
+  const handlePickMedia = (url) => {
+    sendMessage(url, 'image');
+    setShowEmojiBar(false);
+  };
+
   const processAndSendImage = async (asset) => {
     if (!asset?.base64) {
       Alert.alert('Error', 'Could not read the image.');
@@ -249,7 +288,30 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
         Alert.alert('Permission needed', 'We need permission to save photos.');
         return;
       }
-      await MediaLibrary.saveToLibraryAsync(uri);
+      // MediaLibrary needs a real local file with a proper extension - it
+      // cannot save a base64 data URI or a remote https URL directly (this
+      // is the actual cause of the "Could not get the file's extension"
+      // error). Own photos/camera shots arrive as data URIs; GIFs/stickers
+      // arrive as remote URLs (see MediaPickerSheet) - both need to become
+      // a real local file first.
+      let localUri = uri;
+
+      if (uri.startsWith('data:')) {
+        const match = uri.match(/^data:image\/(\w+);base64,(.+)$/);
+        if (!match) throw new Error('Unrecognized image data');
+        const [, ext, base64Data] = match;
+        const tempPath = `${FileSystem.cacheDirectory}wave_save_${Date.now()}.${ext}`;
+        await FileSystem.writeAsStringAsync(tempPath, base64Data, { encoding: FileSystem.EncodingType.Base64 });
+        localUri = tempPath;
+      } else if (uri.startsWith('http://') || uri.startsWith('https://')) {
+        const cleanPath = uri.split('?')[0];
+        const ext = cleanPath.split('.').pop() || 'gif';
+        const tempPath = `${FileSystem.cacheDirectory}wave_save_${Date.now()}.${ext}`;
+        const downloadResult = await FileSystem.downloadAsync(uri, tempPath);
+        localUri = downloadResult.uri;
+      }
+
+      await MediaLibrary.saveToLibraryAsync(localUri);
       Alert.alert('Saved', 'Image saved to your gallery.');
     } catch (err) {
       Alert.alert('Could not save image', err.message);
@@ -445,13 +507,13 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
 
   return (
     <KeyboardAvoidingView
-      style={{ flex: 1, backgroundColor: colors.surface }}
+      style={{ flex: 1, backgroundColor: wallpaperColor || colors.surface }}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
     >
       <View style={styles.header}>
         <TouchableOpacity onPress={onBack} style={styles.backBtn}>
-          <Text style={styles.backArrow}>{'←'}</Text>
+          <Ionicons name="arrow-back" size={24} color={colors.textPrimary} />
         </TouchableOpacity>
         <View style={{ flex: 1 }}>
           <Text style={styles.headerTitle}>{headerTitle}</Text>
@@ -460,10 +522,10 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
         {!isGroup && otherUser && onStartCall && (
           <View style={{ flexDirection: 'row' }}>
             <TouchableOpacity onPress={() => onStartCall(otherUser.id, otherUser.name, 'audio')} style={styles.headerIconBtn}>
-              <Text style={styles.headerIcon}>📞</Text>
+              <Ionicons name="call-outline" size={22} color={colors.accent} />
             </TouchableOpacity>
             <TouchableOpacity onPress={() => onStartCall(otherUser.id, otherUser.name, 'video')} style={styles.headerIconBtn}>
-              <Text style={styles.headerIcon}>📹</Text>
+              <Ionicons name="videocam-outline" size={24} color={colors.accent} />
             </TouchableOpacity>
           </View>
         )}
@@ -481,7 +543,10 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
           if (item.deleted_for_everyone) {
             return (
               <View style={[styles.bubble, isMine ? styles.bubbleMine : styles.bubbleTheirs]}>
-                <Text style={styles.deletedText}>🚫 This message was deleted</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <Ionicons name="ban-outline" size={14} color={colors.textMuted} style={{ marginRight: 6 }} />
+                  <Text style={styles.deletedText}>This message was deleted</Text>
+                </View>
               </View>
             );
           }
@@ -497,16 +562,19 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
               {item.reply_to_id && (
                 <View style={styles.replyPreview}>
                   <Text style={styles.replyPreviewName}>{item.reply_username}</Text>
-                  <Text style={styles.replyPreviewText} numberOfLines={1}>
-                    {item.reply_type === 'image' ? '📷 Photo' : item.reply_type === 'audio' ? '🎤 Voice message' : item.reply_content}
-                  </Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                    {item.reply_type === 'image' && <Ionicons name="camera-outline" size={12} color={colors.textSecondary} style={{ marginRight: 4 }} />}
+                    {item.reply_type === 'audio' && <Ionicons name="mic-outline" size={12} color={colors.textSecondary} style={{ marginRight: 4 }} />}
+                    <Text style={styles.replyPreviewText} numberOfLines={1}>
+                      {item.reply_type === 'image' ? 'Photo' : item.reply_type === 'audio' ? 'Voice message' : item.reply_content}
+                    </Text>
+                  </View>
                 </View>
               )}
 
               {item.message_type === 'image' && (
-                <TouchableOpacity onPress={() => saveImage(item.content)}>
+                <TouchableOpacity onPress={() => setViewerImage(item.content)} onLongPress={() => openActionMenu(item)}>
                   <Image source={{ uri: item.content }} style={styles.messageImage} resizeMode="cover" />
-                  <Text style={[styles.saveHint, { color: isMine ? 'rgba(255,255,255,0.7)' : colors.textMuted }]}>Tap to save</Text>
                 </TouchableOpacity>
               )}
               {item.message_type === 'audio' && <AudioBubble uri={item.content} isMine={isMine} />}
@@ -523,13 +591,19 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
                 <Text style={[styles.bubbleTime, { color: isMine ? 'rgba(255,255,255,0.7)' : colors.textMuted }]}>
                   {new Date(item.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                 </Text>
-                {isMine && <Text style={[styles.tick, item.read && styles.tickRead]}>{item.delivered ? '✓✓' : '✓'}</Text>}
+                {isMine && (
+                  <Ionicons
+                    name={item.delivered ? 'checkmark-done' : 'checkmark'}
+                    size={14}
+                    color={item.read ? '#8FD3FF' : 'rgba(255,255,255,0.7)'}
+                  />
+                )}
               </View>
               <ReactionPills
                 reactions={item.reactions}
                 currentUserId={currentUser.id}
                 onPress={(emoji) => handleToggleReaction(item.id, emoji)}
-                onLongPress={(reaction) => Alert.alert('Reacted', `${reaction.emoji} × ${reaction.count}`)}
+                onLongPress={(reaction) => Alert.alert('Reacted', `${reaction.emoji} x ${reaction.count}`)}
               />
             </TouchableOpacity>
           );
@@ -541,11 +615,11 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
           <View style={{ flex: 1 }}>
             <Text style={styles.replyBarName}>Replying to {replyTo.username}</Text>
             <Text style={styles.replyBarText} numberOfLines={1}>
-              {replyTo.message_type === 'image' ? '📷 Photo' : replyTo.message_type === 'audio' ? '🎤 Voice message' : replyTo.content}
+              {replyTo.message_type === 'image' ? 'Photo' : replyTo.message_type === 'audio' ? 'Voice message' : replyTo.content}
             </Text>
           </View>
           <TouchableOpacity onPress={() => setReplyTo(null)}>
-            <Text style={styles.replyBarClose}>✕</Text>
+            <Ionicons name="close" size={18} color={colors.textMuted} style={{ paddingHorizontal: spacing.sm }} />
           </TouchableOpacity>
         </View>
       )}
@@ -556,14 +630,21 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
             <Text style={styles.replyBarName}>Editing message</Text>
           </View>
           <TouchableOpacity onPress={cancelEdit}>
-            <Text style={styles.replyBarClose}>✕</Text>
+            <Ionicons name="close" size={18} color={colors.textMuted} style={{ paddingHorizontal: spacing.sm }} />
           </TouchableOpacity>
         </View>
       )}
 
       <View style={styles.inputRow}>
-        <TouchableOpacity style={styles.emojiButton} onPress={() => setShowEmojiBar((v) => !v)}>
-          <Text style={styles.emojiToggleIcon}>😊</Text>
+        <TouchableOpacity
+          style={styles.emojiButton}
+          onPress={() => {
+            const next = !showEmojiBar;
+            setShowEmojiBar(next);
+            if (next) Keyboard.dismiss();
+          }}
+        >
+          <Ionicons name="happy-outline" size={24} color={colors.textSecondary} />
         </TouchableOpacity>
 
         <TextInput
@@ -577,11 +658,11 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
         />
 
         <TouchableOpacity style={styles.attachButton} onPress={takePhoto} disabled={sendingCameraImage}>
-          {sendingCameraImage ? <ActivityIndicator size="small" color={colors.accent} /> : <Text style={styles.attachIcon}>📷</Text>}
+          {sendingCameraImage ? <ActivityIndicator size="small" color={colors.accent} /> : <Ionicons name="camera-outline" size={23} color={colors.textSecondary} />}
         </TouchableOpacity>
 
         <TouchableOpacity style={styles.attachButton} onPress={pickImage} disabled={sendingImage}>
-          {sendingImage ? <ActivityIndicator size="small" color={colors.accent} /> : <Text style={styles.attachIcon}>📎</Text>}
+          {sendingImage ? <ActivityIndicator size="small" color={colors.accent} /> : <Ionicons name="attach-outline" size={23} color={colors.textSecondary} />}
         </TouchableOpacity>
 
         {editingMessage ? (
@@ -598,36 +679,30 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
               styles.micPulse,
               recorderState.isRecording && { transform: [{ scale: pulseAnim }], backgroundColor: colors.recordingPulse }
             ]}>
-              <Text style={styles.micIcon}>{recorderState.isRecording ? '⏺' : '🎤'}</Text>
+              <Ionicons name={recorderState.isRecording ? 'stop' : 'mic'} size={20} color={colors.textOnAccent} />
             </Animated.View>
           </TouchableOpacity>
         ) : (
-          <TouchableOpacity style={styles.sendButton} onPress={() => sendMessage()}>
-            <Text style={styles.sendButtonText}>Send</Text>
+          <TouchableOpacity style={styles.sendButtonRound} onPress={() => sendMessage()}>
+            <Ionicons name="send" size={18} color={colors.textOnAccent} />
           </TouchableOpacity>
         )}
       </View>
 
-      {showEmojiBar && (
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          style={styles.emojiBar}
-          contentContainerStyle={{ paddingHorizontal: spacing.md }}
-        >
-          {QUICK_EMOJIS.map((e) => (
-            <TouchableOpacity key={e} onPress={() => insertEmoji(e)} style={styles.emojiBarItem}>
-              <Text style={{ fontSize: 26 }}>{e}</Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-      )}
+      <MediaPickerSheet
+        visible={showEmojiBar}
+        token={token}
+        serverUrl={SERVER_URL}
+        onInsertEmoji={insertEmoji}
+        onPickMedia={handlePickMedia}
+        onRequestClose={() => setShowEmojiBar(false)}
+      />
 
       {recorderState.isRecording && (
         <View style={styles.recordingBanner}>
           <View style={{ flexDirection: 'row', alignItems: 'center' }}>
             <Animated.View style={[styles.recDot, { transform: [{ scale: pulseAnim }] }]} />
-            <Text style={styles.recordingText}>Recording {formatDuration(recorderState.durationMillis)} — release to send</Text>
+            <Text style={styles.recordingText}>Recording {formatDuration(recorderState.durationMillis)} - release to send</Text>
           </View>
           <TouchableOpacity onPress={cancelRecording}>
             <Text style={styles.cancelText}>Cancel</Text>
@@ -644,6 +719,11 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
             <TouchableOpacity style={styles.actionItem} onPress={openReactionPicker}>
               <Text style={styles.actionText}>React</Text>
             </TouchableOpacity>
+            {actionMenuFor?.message_type === 'image' && (
+              <TouchableOpacity style={styles.actionItem} onPress={() => { const msg = actionMenuFor; closeActionMenu(); saveImage(msg.content); }}>
+                <Text style={styles.actionText}>Save to Gallery</Text>
+              </TouchableOpacity>
+            )}
             {actionMenuFor?.message_type === 'text' && (
               <TouchableOpacity style={styles.actionItem} onPress={handleCopy}>
                 <Text style={styles.actionText}>Copy</Text>
@@ -694,6 +774,18 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
           </View>
         </View>
       </Modal>
+
+      <ImageViewerModal
+        visible={!!viewerImage}
+        uri={viewerImage}
+        saving={savingViewerImage}
+        onClose={() => setViewerImage(null)}
+        onSave={async () => {
+          setSavingViewerImage(true);
+          await saveImage(viewerImage);
+          setSavingViewerImage(false);
+        }}
+      />
     </KeyboardAvoidingView>
   );
 }
@@ -727,7 +819,7 @@ const styles = StyleSheet.create({
   messageImage: { width: 200, height: 200, borderRadius: radii.sm },
   saveHint: { fontSize: 10, marginTop: 2, textAlign: 'center' },
   audioRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: spacing.xs, minWidth: 140 },
-  audioIcon: { fontSize: 20, marginRight: spacing.sm },
+  audioIcon: { marginRight: spacing.sm },
   audioLabel: { fontSize: 14 },
   replyPreview: {
     borderLeftWidth: 3, borderLeftColor: colors.accent, backgroundColor: 'rgba(44,107,237,0.08)',
@@ -738,8 +830,6 @@ const styles = StyleSheet.create({
   metaRow: { flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', marginTop: 4 },
   editedLabel: { fontSize: 10, marginRight: 4, fontStyle: 'italic' },
   bubbleTime: { fontSize: 10, marginRight: 4 },
-  tick: { fontSize: 12, color: 'rgba(255,255,255,0.7)' },
-  tickRead: { color: '#8FD3FF' },
 
   replyBar: {
     flexDirection: 'row', alignItems: 'center', backgroundColor: colors.surface,
@@ -748,18 +838,13 @@ const styles = StyleSheet.create({
   },
   replyBarName: { fontSize: 12, fontWeight: '700', color: colors.accent },
   replyBarText: { fontSize: 12, color: colors.textSecondary },
-  replyBarClose: { fontSize: 16, color: colors.textMuted, paddingHorizontal: spacing.sm },
 
   inputRow: {
     flexDirection: 'row', padding: spacing.sm, backgroundColor: colors.background,
     alignItems: 'flex-end', borderTopWidth: 1, borderTopColor: colors.border
   },
-  attachButton: { padding: spacing.sm, marginRight: 2, minWidth: 30, alignItems: 'center' },
-  attachIcon: { fontSize: 22 },
+  attachButton: { padding: spacing.sm, marginRight: 2, minWidth: 30, alignItems: 'center', justifyContent: 'center' },
   emojiButton: { padding: spacing.sm, marginRight: 2, minWidth: 30, alignItems: 'center', justifyContent: 'center' },
-  emojiToggleIcon: { fontSize: 22 },
-  emojiBar: { backgroundColor: colors.background, paddingVertical: spacing.sm, borderTopWidth: 1, borderTopColor: colors.border },
-  emojiBarItem: { paddingHorizontal: spacing.sm, justifyContent: 'center' },
   input: {
     flex: 1, borderWidth: 1, borderColor: colors.border, borderRadius: radii.pill,
     paddingHorizontal: spacing.lg, paddingVertical: spacing.sm, marginRight: spacing.sm,
@@ -770,6 +855,10 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.md, justifyContent: 'center'
   },
   sendButtonText: { color: colors.textOnAccent, fontWeight: '600' },
+  sendButtonRound: {
+    width: 44, height: 44, borderRadius: 22, backgroundColor: colors.accent,
+    justifyContent: 'center', alignItems: 'center'
+  },
   micButton: { width: 44, height: 44, justifyContent: 'center', alignItems: 'center' },
   micPulse: {
     width: 44, height: 44, borderRadius: 22, backgroundColor: colors.accent,
