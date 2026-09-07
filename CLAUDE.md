@@ -240,7 +240,8 @@ Authentication, authorization, ownership, input validation, output validation, f
 Chosen: **deactivate (reversible) + hard delete (irreversible, keeps others' history as "Deleted User")**. Both live in Settings → Account.
 - **Deactivate**: `users.status` column ('active'|'inactive'). `POST /users/me/deactivate`. `requireAuth` (middleware/auth.js) + socket `io.use` (server.js) hard-block inactive accounts on every request; `POST /auth/login` flips inactive→active and returns `reactivated:true` (LoginScreen shows "Welcome back"). match-contacts and `call:invite` skip non-active users.
 - **Hard delete**: `DELETE /users/me` — one `db.transaction`: rename the user's `messages.username` to 'Deleted User', delete their rows from conversation_members / privacy_settings / blocked_users (both directions) / call_deletions / message_deletions / message_reactions, then delete the `users` row. Messages + calls stay for everyone else. `routes/calls.js` uses LEFT JOIN + `COALESCE(name,'Deleted User')`; `routes/conversations.js` GET / falls back to `{name:'Deleted User'}` when the other 1:1 member is gone.
-- The dangling `messages.user_id` (points at a deleted id) is intentional — only ever compared for "is this mine?", never joined for identity after the rename.
+- The dangling `messages.user_id` (points at a deleted id) is intentional — only ever compared for "is this mine?", never joined for identity after the rename. Same for `calls.caller_id` / `calls.callee_id`.
+- **FK enforcement must be toggled off around the `users`-row delete.** better-sqlite3 enables `PRAGMA foreign_keys` by default, and the retained `messages` / `calls` rows still reference the user, so `DELETE FROM users` throws `SQLITE_CONSTRAINT_FOREIGNKEY`. The handler does `db.pragma('foreign_keys = OFF')` → `runDelete()` (the transaction) → `db.pragma('foreign_keys = ON')` in a `finally`. The pragma is a no-op while a transaction is open so it is toggled *outside* `db.transaction`; safe because Node is single-threaded and better-sqlite3 is synchronous. This was a real bug (Session 5) — the endpoint returned "Nothing was changed - try again." for every delete until the toggle was added. Fixed & deployed. Handler also guards `info.changes === 0` (concurrent double-delete) and rolls back.
 - **ChatScreen UX**: `GET /conversations` `with.status` ('active' | 'inactive' | 'deleted') and `POST /conversations/start` `with.status` carry the other party's state. ChatScreen reads `otherUser.status`: when not active it hides the input bar + call buttons + Reply/Edit menu items, suppresses the header subtitle, and shows a bottom banner ("This account has been deactivated/deleted"). Existing messages still render. It's an open-time snapshot — no live status push if they deactivate mid-conversation.
 
 ---
@@ -286,6 +287,9 @@ After play() completes the player stays paused at the end. Convention here is se
 curl health returning ok does NOT mean routes work.
 Always also run: pm2 logs chat-server --lines 30 --nostream
 
+### better-sqlite3 enforces foreign keys by default
+`PRAGMA foreign_keys` is ON on the app's connection (the `sqlite3` CLI shows 0 — different connection, ignore it). Any delete/reassign that leaves a child row (`messages`, `calls`, `conversation_members`, `privacy_settings`, `message_reactions`) pointing at a gone `users` row throws `SQLITE_CONSTRAINT_FOREIGNKEY`. If a feature deliberately keeps history for a deleted user, toggle `db.pragma('foreign_keys = OFF')` around the transaction (outside `db.transaction` — the pragma is ignored mid-transaction) and turn it back ON in a `finally`. See `DELETE /users/me` in `routes/users.js`.
+
 ### Backend lives ONLY on EC2 — this repo does not contain it
 The `chat-server` backend (auth, conversations, `call_signaling.js`, `routes/`, `db.js`, chat.db) is on the EC2 box and is NOT in git in any usable form — the server's own repo has a single "Initial server code" commit and the working tree has diverged massively (uncommitted `server.js`, all of `routes/`, `call_signaling.js`, dozens of `.bak` files). A local `~/Downloads/chat-server` may exist but is a stale pre-calling snapshot — do not trust it.
 - SSH: `ssh -i ~/Downloads/my-chat-app/chatbox.pem ubuntu@13.232.16.85` (key is gitignored via `*.pem`; also at `chatbox.pem` in repo root)
@@ -326,5 +330,6 @@ Options: LiveKit, mediasoup, Janus Gateway. Verify New Architecture compatibilit
 
 ---
 
-*Last updated: Session 4 — Call ring timeout (60s, server-authoritative) built & deployed; CLAUDE.md created*
+*Last updated: Session 5 — Fixed `DELETE /users/me` hard delete (FK enforcement blocked the users-row delete; now toggles `foreign_keys` OFF around the txn). Deployed + e2e verified server-side.*
+*Session 4 — Call ring timeout (60s, server-authoritative) built & deployed; CLAUDE.md created*
 *Always read this entire file before touching any code.*
