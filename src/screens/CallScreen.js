@@ -37,11 +37,25 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
   const callManagerRef = useRef(null);
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const durationTimerRef = useRef(null);
-  // Requires a ringtone file at assets/ringtone.mp3 - not something
-  // this patch can generate. Any short notification/ringtone mp3 works;
-  // drop it in before reloading, or this require() will fail to resolve.
-  // RINGTONE_DISABLED_NO_ASSET: add assets/ringtone.mp3, then uncomment the line below.
-  // const ringtonePlayer = useAudioPlayer(require('../../assets/ringtone.mp3'));
+  // Incoming-call ringtone. expo-audio has no gapless loop we rely on here
+  // (see CLAUDE.md "expo-audio does not auto-loop"), so the ringing effect
+  // below re-triggers playback on an interval.
+  const ringtonePlayer = useAudioPlayer(require('../../assets/ringtone.mp3'));
+
+  // Stop the ringtone + vibration immediately and synchronously. Must run
+  // BEFORE expo-call-audio claims MODE_IN_COMMUNICATION (on accept), so the
+  // media-stream ringtone fully releases the audio output first - the two
+  // otherwise briefly share one Android audio session. The ringing effect's
+  // cleanup also calls this, but that only runs a React commit later (after
+  // setStatus), which races acceptIncomingCall().
+  const stopRinging = () => {
+    Vibration.cancel();
+    try {
+      ringtonePlayer.pause();
+      // seekTo returns a promise - swallow rejection if the player is already released
+      Promise.resolve(ringtonePlayer.seekTo(0)).catch(() => {});
+    } catch (e) {}
+  };
 
   useEffect(() => {
     const call = createCallManager(socket, {
@@ -99,6 +113,7 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
     };
     const handleRejected = () => { Alert.alert('Call declined'); onEndCall(); };
     const handleEnded = (payload) => {
+      stopRinging(); // in case the call ends (cancel / 60s timeout) while still ringing
       call.cleanup();
       // The server ends the call for both sides after RING_TIMEOUT (60s) of
       // no answer; it reuses this same 'call:ended' event with reason set.
@@ -177,25 +192,39 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
     return () => clearTimeout(t);
   }, [status]);
 
-  // Ringtone + vibration, incoming calls only (status is only ever
-  // 'ringing' on the receiving side).
+  // Ringtone + vibration, incoming calls only (status is only ever 'ringing'
+  // on the receiving side, and only until the user accepts/rejects or the
+  // call ends). While ringing the audio session is still MODE_NORMAL -
+  // expo-call-audio's startCallAudio() (MODE_IN_COMMUNICATION) runs only
+  // from acceptIncomingCall()/startOutgoingCall(), i.e. after the ring - so
+  // the two never overlap as long as stopRinging() runs before we accept.
   useEffect(() => {
     if (status !== 'ringing') return;
 
+    const playFromStart = () => {
+      try {
+        Promise.resolve(ringtonePlayer.seekTo(0)).catch(() => {});
+        ringtonePlayer.play();
+      } catch (e) {
+        console.log('[CALL] ringtone play failed:', e?.message);
+      }
+    };
+
     Vibration.vibrate([0, 500, 500], true);
-    // ringtonePlayer.seekTo(0); // enable once assets/ringtone.mp3 exists
-    // ringtonePlayer.play();
-    const replayInterval = setInterval(() => {
-    }, 4000);
+    playFromStart();
+    // expo-audio does not auto-loop: after the clip ends the player just
+    // sits paused at the end. Re-seek to 0 and replay every 4s to loop it
+    // like a phone ring (short gap between repeats is intentional).
+    const replayInterval = setInterval(playFromStart, 4000);
 
     return () => {
-      Vibration.cancel();
       clearInterval(replayInterval);
-      // ringtonePlayer.pause();
+      stopRinging();
     };
   }, [status]);
 
   const handleAccept = async () => {
+    stopRinging(); // release the audio output BEFORE expo-call-audio takes the session
     setStatus('connecting'); // NOT 'active' - real media hasn't arrived yet
     try {
       await callManagerRef.current.acceptIncomingCall(callInfo.callId, callInfo.fromUserId, callInfo.callType);
@@ -207,6 +236,7 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
   };
 
   const handleReject = () => {
+    stopRinging();
     socket.emit('call:reject', { callId: callInfo.callId, fromUserId: callInfo.fromUserId });
     onEndCall();
   };
