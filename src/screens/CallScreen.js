@@ -7,6 +7,10 @@ import { createCallManager } from '../utils/callManager';
 import ExpoCallAudioModule from '../../modules/expo-call-audio/src/ExpoCallAudioModule';
 import { useAudioPlayer } from 'expo-audio';
 
+// Server ends an unanswered call at 60s (RING_TIMEOUT_MS in call_signaling.js).
+// This client-side backstop runs slightly later so the server stays authoritative.
+const RING_FAILSAFE_MS = 65 * 1000;
+
 function formatDuration(seconds) {
   const m = Math.floor(seconds / 60).toString().padStart(2, '0');
   const s = (seconds % 60).toString().padStart(2, '0');
@@ -94,7 +98,17 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
       }
     };
     const handleRejected = () => { Alert.alert('Call declined'); onEndCall(); };
-    const handleEnded = () => { call.cleanup(); onEndCall(); };
+    const handleEnded = (payload) => {
+      call.cleanup();
+      // The server ends the call for both sides after RING_TIMEOUT (60s) of
+      // no answer; it reuses this same 'call:ended' event with reason set.
+      // Only the caller gets told - the callee just sees the screen dismiss,
+      // matching how every other call app handles a missed incoming call.
+      if (payload?.reason === 'timeout' && callInfo.mode === 'outgoing') {
+        Alert.alert('No answer', `${otherName || 'They'} didn't answer.`);
+      }
+      onEndCall();
+    };
 
     socket.on('call:accepted', handleAccepted);
     socket.on('call:answer', handleAnswer);
@@ -143,6 +157,24 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
       setDuration(0);
     }
     return () => clearInterval(durationTimerRef.current);
+  }, [status]);
+
+  // Failsafe for the ring timeout. The server is authoritative and ends an
+  // unanswered call for both sides at 60s via 'call:ended' - this only fires
+  // if that event never reaches us (our socket silently dropped while
+  // ringing). Deliberately longer than the server's 60s so the server wins
+  // in the normal case and this is a pure backstop, never the primary path.
+  useEffect(() => {
+    if (status !== 'ringing' && status !== 'calling') return;
+    const t = setTimeout(() => {
+      if (callInfo.mode === 'outgoing') {
+        // Tell the server too (records the call as missed), then dismiss.
+        callManagerRef.current?.hangUp();
+        Alert.alert('No answer', `${otherName || 'They'} didn't answer.`);
+      }
+      onEndCall();
+    }, RING_FAILSAFE_MS);
+    return () => clearTimeout(t);
   }, [status]);
 
   // Ringtone + vibration, incoming calls only (status is only ever
