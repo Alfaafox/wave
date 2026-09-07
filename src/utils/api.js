@@ -113,6 +113,21 @@ export function changePassword(token, currentPassword, newPassword) {
     body: JSON.stringify({ currentPassword, newPassword })
   });
 }
+// Reversible - the account is restored by logging in again (see login()'s
+// `reactivated` flag, surfaced as a "Welcome back" alert in LoginScreen).
+export function deactivateAccount(token) {
+  return request('/users/me/deactivate', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` }
+  });
+}
+// Irreversible. Server keeps messages/calls but relabels them "Deleted User".
+export function deleteAccount(token) {
+  return request('/users/me', {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` }
+  });
+}
 export function getPrivacySettings(token) {
   return request('/privacy', {
     method: 'GET',

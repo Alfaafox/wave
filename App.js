@@ -57,7 +57,14 @@ export default function App() {
             setCurrentUser(normalized);
             AsyncStorage.setItem('user', JSON.stringify(normalized));
           }).catch((err) => {
-            console.warn('Could not refresh profile at launch:', err.message);
+            // If this device still has a token for an account that was
+            // deactivated or deleted (e.g. from another device), drop the
+            // stale session instead of showing a dead chat list.
+            if (/deactivat|no longer exists/i.test(err.message || '')) {
+              handleLogout();
+            } else {
+              console.warn('Could not refresh profile at launch:', err.message);
+            }
           });
         }
       } finally {
@@ -210,6 +217,7 @@ export default function App() {
               currentUser={currentUser}
               onBack={() => setScreen('settings')}
               onUserUpdated={handleUserUpdated}
+              onLogout={handleLogout}
             />
           )}
           {screen === 'settingsPrivacy' && (

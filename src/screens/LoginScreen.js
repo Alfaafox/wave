@@ -16,7 +16,15 @@ export default function LoginScreen({ onLoggedIn, goToSignup }) {
     try {
       const data = await login(email.trim(), password);
       setLoading(false);
-      onLoggedIn(data.token, data.user);
+      if (data.reactivated) {
+        Alert.alert(
+          'Welcome back',
+          'Your account has been reactivated. Everything is right where you left it.',
+          [{ text: 'Continue', onPress: () => onLoggedIn(data.token, data.user) }]
+        );
+      } else {
+        onLoggedIn(data.token, data.user);
+      }
     } catch (err) {
       setLoading(false);
       Alert.alert('Login failed', `${err.message}\n\nTrying to reach: ${SERVER_URL}`);

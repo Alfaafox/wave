@@ -3,7 +3,7 @@ import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, ActivityInd
 import { Ionicons } from '@expo/vector-icons';
 import SettingsSubScreenLayout from '../components/SettingsSubScreenLayout';
 import EditFieldScreen from '../components/EditFieldScreen';
-import { updateProfile, changePassword } from '../utils/api';
+import { updateProfile, changePassword, deactivateAccount, deleteAccount } from '../utils/api';
 import { colors, spacing, radii, shadow } from '../theme';
 
 // Dedicated change-password screen. Kept local to this file since it's
@@ -77,25 +77,134 @@ function ChangePasswordScreen({ token, onBack }) {
   );
 }
 
-function DeleteAccountScreen({ onBack }) {
+function Bullets({ lines }) {
   return (
-    <SettingsSubScreenLayout title="Delete Account" onBack={onBack}>
+    <View style={{ marginTop: spacing.sm }}>
+      {lines.map((line) => (
+        <View key={line} style={styles.bulletRow}>
+          <Text style={styles.bulletDot}>{'•'}</Text>
+          <Text style={styles.bulletText}>{line}</Text>
+        </View>
+      ))}
+    </View>
+  );
+}
+
+// Reversible. Confirm alert -> deactivate -> the account is now blocked by
+// the server, so we log out on this device (onDone === App's handleLogout).
+function DeactivateAccountScreen({ token, onDone, onBack }) {
+  const [working, setWorking] = useState(false);
+
+  const runDeactivate = async () => {
+    setWorking(true);
+    try {
+      await deactivateAccount(token);
+      Alert.alert(
+        'Account deactivated',
+        'You have been logged out. Log in again anytime to reactivate your account - nothing has been deleted.',
+        [{ text: 'OK', onPress: onDone }]
+      );
+    } catch (err) {
+      setWorking(false);
+      Alert.alert('Could not deactivate', err.message);
+    }
+  };
+
+  const confirm = () => {
+    Alert.alert(
+      'Deactivate account?',
+      'You can reactivate by logging in again.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Deactivate', style: 'destructive', onPress: runDeactivate },
+      ]
+    );
+  };
+
+  return (
+    <SettingsSubScreenLayout title="Deactivate Account" onBack={onBack}>
       <View style={styles.dangerCard}>
-        <Ionicons name="warning-outline" size={22} color={colors.danger} style={{ marginBottom: spacing.sm }} />
-        <Text style={styles.dangerTitle}>This is being built next</Text>
-        <Text style={styles.dangerText}>
-          Account deletion needs a careful pass over every table your data touches, so it isn't
-          rushed. It will be available here shortly.
-        </Text>
+        <Text style={styles.dangerTitle}>While deactivated</Text>
+        <Bullets lines={[
+          'You are logged out on this device',
+          "You won't show up in other people's contacts",
+          'People cannot call you',
+          'Your chats, messages and call history are kept',
+          'Logging in again restores everything',
+        ]} />
       </View>
+
+      <TouchableOpacity style={styles.dangerButton} onPress={confirm} disabled={working} activeOpacity={0.85}>
+        {working ? <ActivityIndicator color={colors.textOnAccent} /> : <Text style={styles.dangerButtonText}>Deactivate Account</Text>}
+      </TouchableOpacity>
     </SettingsSubScreenLayout>
   );
 }
 
-export default function AccountSettingsScreen({ token, currentUser, onBack, onUserUpdated }) {
+// Irreversible. Typing DELETE is the confirmation (no extra alert). On
+// success we log out (onDone === App's handleLogout).
+function DeleteAccountScreen({ token, onDone, onBack }) {
+  const [confirmText, setConfirmText] = useState('');
+  const [working, setWorking] = useState(false);
+  const canDelete = confirmText === 'DELETE';
+
+  const runDelete = async () => {
+    if (!canDelete || working) return;
+    setWorking(true);
+    try {
+      await deleteAccount(token);
+      Alert.alert(
+        'Account deleted',
+        'Your account and profile photo have been removed. Your past messages now show as "Deleted User".',
+        [{ text: 'OK', onPress: onDone }]
+      );
+    } catch (err) {
+      setWorking(false);
+      Alert.alert('Could not delete account', err.message);
+    }
+  };
+
+  return (
+    <SettingsSubScreenLayout title="Delete Account" onBack={onBack}>
+      <View style={styles.dangerCard}>
+        <Text style={styles.dangerTitle}>This permanently</Text>
+        <Bullets lines={[
+          'Deletes your account and profile photo',
+          'Removes you from every group chat',
+          'Replaces your name with "Deleted User" on past messages',
+          'Cannot be undone',
+        ]} />
+        <Text style={styles.dangerText}>
+          Your past messages and calls stay visible to other people, shown as "Deleted User".
+        </Text>
+      </View>
+
+      <Text style={styles.confirmLabel}>Type DELETE to confirm</Text>
+      <TextInput
+        style={styles.input}
+        value={confirmText}
+        onChangeText={setConfirmText}
+        placeholder="DELETE"
+        placeholderTextColor={colors.textMuted}
+        autoCapitalize="characters"
+        autoCorrect={false}
+      />
+      <TouchableOpacity
+        style={[styles.dangerButton, !canDelete && styles.dangerButtonDisabled]}
+        onPress={runDelete}
+        disabled={!canDelete || working}
+        activeOpacity={0.85}
+      >
+        {working ? <ActivityIndicator color={colors.textOnAccent} /> : <Text style={styles.dangerButtonText}>Delete Account</Text>}
+      </TouchableOpacity>
+    </SettingsSubScreenLayout>
+  );
+}
+
+export default function AccountSettingsScreen({ token, currentUser, onBack, onUserUpdated, onLogout }) {
   // Local sub-navigation, contained entirely within this section - App.js
   // doesn't know or care about any of these sub-screens.
-  const [subScreen, setSubScreen] = useState(null); // null | 'name' | 'email' | 'password' | 'delete'
+  const [subScreen, setSubScreen] = useState(null); // null | 'name' | 'email' | 'password' | 'deactivate' | 'delete'
 
   const saveName = async (newName) => {
     const result = await updateProfile(token, newName, currentUser?.email || '');
@@ -138,8 +247,12 @@ export default function AccountSettingsScreen({ token, currentUser, onBack, onUs
     return <ChangePasswordScreen token={token} onBack={() => setSubScreen(null)} />;
   }
 
+  if (subScreen === 'deactivate') {
+    return <DeactivateAccountScreen token={token} onDone={onLogout} onBack={() => setSubScreen(null)} />;
+  }
+
   if (subScreen === 'delete') {
-    return <DeleteAccountScreen onBack={() => setSubScreen(null)} />;
+    return <DeleteAccountScreen token={token} onDone={onLogout} onBack={() => setSubScreen(null)} />;
   }
 
   // Default: the Account list
@@ -166,7 +279,10 @@ export default function AccountSettingsScreen({ token, currentUser, onBack, onUs
         </TouchableOpacity>
       </View>
 
-      <TouchableOpacity style={styles.deleteRow} onPress={() => setSubScreen('delete')} activeOpacity={0.6}>
+      <TouchableOpacity style={styles.deleteRow} onPress={() => setSubScreen('deactivate')} activeOpacity={0.6}>
+        <Text style={styles.deleteRowText}>Deactivate Account</Text>
+      </TouchableOpacity>
+      <TouchableOpacity style={styles.deleteRowTight} onPress={() => setSubScreen('delete')} activeOpacity={0.6}>
         <Text style={styles.deleteRowText}>Delete Account</Text>
       </TouchableOpacity>
     </SettingsSubScreenLayout>
@@ -186,6 +302,7 @@ const styles = StyleSheet.create({
   rowValue: { fontSize: 14, color: colors.textMuted, marginRight: spacing.sm, flexShrink: 1 },
 
   deleteRow: { marginTop: spacing.xl, alignItems: 'center', padding: spacing.md },
+  deleteRowTight: { marginTop: spacing.xs, alignItems: 'center', padding: spacing.md },
   deleteRowText: { color: colors.danger, fontSize: 15, fontWeight: '600' },
 
   card: { backgroundColor: colors.surface, borderRadius: radii.md, padding: spacing.lg, ...shadow.md },
@@ -199,5 +316,17 @@ const styles = StyleSheet.create({
 
   dangerCard: { backgroundColor: colors.surface, borderRadius: radii.md, padding: spacing.lg, borderWidth: 1, borderColor: colors.danger, ...shadow.md },
   dangerTitle: { fontSize: 15, fontWeight: '600', color: colors.danger, marginBottom: spacing.xs },
-  dangerText: { fontSize: 13, color: colors.textSecondary, lineHeight: 18 }
+  dangerText: { fontSize: 13, color: colors.textSecondary, lineHeight: 18, marginTop: spacing.md },
+
+  bulletRow: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: spacing.xs },
+  bulletDot: { fontSize: 13, color: colors.textSecondary, marginRight: spacing.sm, lineHeight: 18 },
+  bulletText: { flex: 1, fontSize: 13, color: colors.textSecondary, lineHeight: 18 },
+
+  confirmLabel: { fontSize: 12, color: colors.textMuted, marginTop: spacing.lg, marginBottom: 4 },
+  dangerButton: {
+    backgroundColor: colors.danger, borderRadius: radii.pill,
+    paddingVertical: spacing.md, alignItems: 'center', marginTop: spacing.lg
+  },
+  dangerButtonDisabled: { opacity: 0.4 },
+  dangerButtonText: { color: colors.textOnAccent, fontWeight: '700', fontSize: 15 }
 });

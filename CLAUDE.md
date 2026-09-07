@@ -110,7 +110,7 @@ A local Expo Module (Android Kotlin / iOS Swift / web no-op) that forces the OS 
 ### Phase 0 — Finish What Is Started (right now)
 - Call timeout — auto-cancel unanswered ring after 60s — DONE (server-authoritative, deployed). Server `call_signaling.js`: `armRingTimeout` on `call:invite`, `clearRingTimeout` on accept/reject/end/disconnect, fires the shared `endCallByServer(io, callId, { reason, status })` primitive which emits the existing `call:ended` with a `reason`. Client `CallScreen.js`: shows "No answer" to the caller, plus a 65s failsafe timer. Still needs a real 2-device confirmation test.
 - Ringtone playback — WIRED in CallScreen.js (useAudioPlayer + 4s seekTo(0)/play() loop; `stopRinging()` runs before accept so it releases the audio output before expo-call-audio takes MODE_IN_COMMUNICATION). Android JS bundle verified. STILL NEEDS a real 2-device test: (a) ringtone actually plays + loops on the callee, (b) clean handoff to call audio on accept with no dead air / mic failure, (c) ring stops on reject / remote cancel / 60s timeout. `expo-audio` in this SDK actually does expose `player.loop` — the interval approach is the documented project convention (Section D) but could be revisited.
-- Account deletion — schema mapped, blocked on product decision (see Section C)
+- Account deactivate + hard delete — BUILT (see Section C). Client committed; server change (8 files + `users.status` migration) needs deploy to EC2. Needs a real end-to-end device test.
 - GIPHY attribution — "Powered by GIPHY" badge not added to MediaPickerSheet.js
 - Diagnostic console.logs in ChatScreen.js — still present from unresolved camera bug, need cleanup
 - LoginScreen.js / SignupScreen.js — still on old green WhatsApp theme, not restyled
@@ -236,13 +236,11 @@ Authentication, authorization, ownership, input validation, output validation, f
 
 ## SECTION C — PENDING DECISIONS (user must decide)
 
-### Account Deletion
-DB schema is fully mapped. Three options — user must choose one:
-1. Hard delete — user messages vanish from other people's history too
-2. Anonymize — keep messages, replace name and id with "Deleted User"
-3. Soft delete — mark account inactive, keep all data, block login and discovery
-This is a store requirement — Google Play and Apple both mandate in-app account deletion.
-Tables affected: conversation_members, messages, message_deletions, message_reactions, calls, call_deletions, privacy_settings, blocked_users
+### Account Deletion — DECIDED & BUILT (Session 4)
+Chosen: **deactivate (reversible) + hard delete (irreversible, keeps others' history as "Deleted User")**. Both live in Settings → Account.
+- **Deactivate**: `users.status` column ('active'|'inactive'). `POST /users/me/deactivate`. `requireAuth` (middleware/auth.js) + socket `io.use` (server.js) hard-block inactive accounts on every request; `POST /auth/login` flips inactive→active and returns `reactivated:true` (LoginScreen shows "Welcome back"). match-contacts and `call:invite` skip non-active users.
+- **Hard delete**: `DELETE /users/me` — one `db.transaction`: rename the user's `messages.username` to 'Deleted User', delete their rows from conversation_members / privacy_settings / blocked_users (both directions) / call_deletions / message_deletions / message_reactions, then delete the `users` row. Messages + calls stay for everyone else. `routes/calls.js` uses LEFT JOIN + `COALESCE(name,'Deleted User')`; `routes/conversations.js` GET / falls back to `{name:'Deleted User'}` when the other 1:1 member is gone.
+- The dangling `messages.user_id` (points at a deleted id) is intentional — only ever compared for "is this mine?", never joined for identity after the rename.
 
 ---
 
