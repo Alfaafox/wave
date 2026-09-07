@@ -108,7 +108,7 @@ A local Expo Module (Android Kotlin / iOS Swift / web no-op) that forces the OS 
 ## SECTION A — FULL PRODUCT ROADMAP
 
 ### Phase 0 — Finish What Is Started (right now)
-- Call timeout — auto-cancel unanswered ring after N seconds — NEXT FEATURE, not yet built
+- Call timeout — auto-cancel unanswered ring after 60s — DONE (server-authoritative, deployed). Server `call_signaling.js`: `armRingTimeout` on `call:invite`, `clearRingTimeout` on accept/reject/end/disconnect, fires the shared `endCallByServer(io, callId, { reason, status })` primitive which emits the existing `call:ended` with a `reason`. Client `CallScreen.js`: shows "No answer" to the caller, plus a 65s failsafe timer. Still needs a real 2-device confirmation test.
 - Ringtone playback — file exists at assets/ringtone.mp3, rebuild done, audio NOT yet confirmed on real device
 - Account deletion — schema mapped, blocked on product decision (see Section C)
 - GIPHY attribution — "Powered by GIPHY" badge not added to MediaPickerSheet.js
@@ -123,8 +123,8 @@ A local Expo Module (Android Kotlin / iOS Swift / web no-op) that forces the OS 
 - Username system — currently phone-number only, affects all future social features
 
 ### Phase 2 — Complete Calling
-- Call timeout — next feature
-- Call glare handling — two people calling each other simultaneously, not yet tested
+- Call timeout — DONE (see Phase 0)
+- Call glare handling — two people calling each other simultaneously, not yet tested. NEXT. Reuse the `endCallByServer(io, callId, { reason: 'glare', status: 'missed' })` primitive already in `call_signaling.js` — pick a deterministic loser (e.g. lower userId wins), end the loser's call through that one path. Do NOT add a parallel code path. Note: the two `call:invite` handlers cannot actually interleave (Node single-threaded, handlers are synchronous), so today the first-processed invite wins fully and the other gets `{ ok: false, busy: true }` + a `call:incoming` — the work is making that outcome clean on the client.
 - Bluetooth audio routing — speaker toggle exists, device selection does not
 - ICE reconnect on network drop — currently just ends the call
 - Group calling — needs SFU architecture (LiveKit/mediasoup/Janus researched, not started)
@@ -287,10 +287,17 @@ After play() completes, player stays paused. Use setInterval calling seekTo(0) +
 curl health returning ok does NOT mean routes work.
 Always also run: pm2 logs chat-server --lines 30 --nostream
 
+### Backend lives ONLY on EC2 — this repo does not contain it
+The `chat-server` backend (auth, conversations, `call_signaling.js`, `routes/`, `db.js`, chat.db) is on the EC2 box and is NOT in git in any usable form — the server's own repo has a single "Initial server code" commit and the working tree has diverged massively (uncommitted `server.js`, all of `routes/`, `call_signaling.js`, dozens of `.bak` files). A local `~/Downloads/chat-server` may exist but is a stale pre-calling snapshot — do not trust it.
+- SSH: `ssh -i ~/Downloads/my-chat-app/chatbox.pem ubuntu@13.232.16.85` (key is gitignored via `*.pem`; also at `chatbox.pem` in repo root)
+- Deploy model: edit files in place on the server, back up first (`cp x.js x.js.bak-$(date +%s)` — matches existing convention), `node --check`, then `pm2 restart chat-server`. There is NO CI/CD and NO git-based deploy.
+- After any restart: check `pm2 logs chat-server --lines 30 --nostream` (error.log should be empty) AND `curl http://13.232.16.85:3000/health`.
+- To inspect server code from a dev machine: read it over SSH — it is the only source of truth.
+
 ### Machine identity
 PC weekends: guru@Guru, path C:\Users\GuruD\wave, PowerShell 5.1
 Laptop weekdays: guru@laptop, path ~/Downloads/my-chat-app, Linux bash
-EC2 always: ubuntu@ip-172-31-46-32, path /home/ubuntu/chat-server
+EC2 always: ubuntu@ip-172-31-46-32 (public 13.232.16.85), path /home/ubuntu/chat-server
 Always confirm whoami && hostname && pwd if terminal context is ambiguous.
 
 ---
@@ -315,10 +322,10 @@ Currently base64 in SQLite. Migrate to S3 before Stories, shared albums, any med
 P2P mesh does not scale past 4 users. SFU is correct architecture.
 Options: LiveKit, mediasoup, Janus Gateway. Verify New Architecture compatibility before adopting any.
 
-### Build call timeout in a way that glare handling can reuse
-Call glare handling is coming right after timeout. Build timeout logic so glare handler plugs into the same system, not a duplicate.
+### Server-decided call termination goes through ONE primitive
+`call_signaling.js` has `endCallByServer(io, callId, { reason, status })` — the single path for any case where the SERVER (not a user tap) ends a call. Ring timeout uses it now; glare handling must use it too (`reason: 'glare'`), not a parallel path. It records the terminal `calls.status`, clears both `activeCalls` sides + the ring timer, and emits the existing `call:ended` (with `reason`) to both parties. Clients need no new event — they already handle `call:ended`.
 
 ---
 
-*Last updated: Session 3 — Laptop setup, GIF/Sticker fix, Claude Code transition*
+*Last updated: Session 4 — Call ring timeout (60s, server-authoritative) built & deployed; CLAUDE.md created*
 *Always read this entire file before touching any code.*
