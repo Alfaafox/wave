@@ -501,7 +501,18 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
   };
 
   const headerTitle = isGroup ? (groupName || 'Group') : (otherUser?.name || 'Chat');
-  const headerSubtitle = isGroup
+
+  // The other party's account state, from GET /conversations' `with.status`
+  // ('active' | 'inactive' = deactivated | 'deleted'). When it's not active,
+  // hide the input bar + call buttons and show a banner instead - you can
+  // still read the existing messages.
+  const accountStatus = isGroup ? null : otherUser?.status;
+  const accountUnavailable = accountStatus === 'inactive' || accountStatus === 'deleted';
+  const unavailableLabel = accountStatus === 'deleted'
+    ? 'This account has been deleted'
+    : 'This account has been deactivated';
+
+  const headerSubtitle = isGroup || accountUnavailable
     ? null
     : (isOtherTyping ? 'typing...' : isOnline ? 'Online' : otherUser?.last_seen ? `Last seen ${new Date(otherUser.last_seen).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : '');
 
@@ -519,7 +530,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
           <Text style={styles.headerTitle}>{headerTitle}</Text>
           {!!headerSubtitle && <Text style={styles.headerSubtitle}>{headerSubtitle}</Text>}
         </View>
-        {!isGroup && otherUser && onStartCall && (
+        {!isGroup && otherUser && onStartCall && !accountUnavailable && (
           <View style={{ flexDirection: 'row' }}>
             <TouchableOpacity onPress={() => onStartCall(otherUser.id, otherUser.name, 'audio')} style={styles.headerIconBtn}>
               <Ionicons name="call-outline" size={22} color={colors.accent} />
@@ -610,7 +621,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
         }}
       />
 
-      {replyTo && (
+      {replyTo && !accountUnavailable && (
         <View style={styles.replyBar}>
           <View style={{ flex: 1 }}>
             <Text style={styles.replyBarName}>Replying to {replyTo.username}</Text>
@@ -624,7 +635,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
         </View>
       )}
 
-      {editingMessage && (
+      {editingMessage && !accountUnavailable && (
         <View style={styles.replyBar}>
           <View style={{ flex: 1 }}>
             <Text style={styles.replyBarName}>Editing message</Text>
@@ -635,6 +646,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
         </View>
       )}
 
+      {!accountUnavailable && (
       <View style={styles.inputRow}>
         <TouchableOpacity
           style={styles.emojiButton}
@@ -688,7 +700,9 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
           </TouchableOpacity>
         )}
       </View>
+      )}
 
+      {!accountUnavailable && (
       <MediaPickerSheet
         visible={showEmojiBar}
         token={token}
@@ -697,8 +711,16 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
         onPickMedia={handlePickMedia}
         onRequestClose={() => setShowEmojiBar(false)}
       />
+      )}
 
-      {recorderState.isRecording && (
+      {accountUnavailable && (
+        <View style={styles.unavailableBanner}>
+          <Ionicons name="ban-outline" size={16} color={colors.textMuted} style={{ marginRight: spacing.sm }} />
+          <Text style={styles.unavailableText}>{unavailableLabel}</Text>
+        </View>
+      )}
+
+      {recorderState.isRecording && !accountUnavailable && (
         <View style={styles.recordingBanner}>
           <View style={{ flexDirection: 'row', alignItems: 'center' }}>
             <Animated.View style={[styles.recDot, { transform: [{ scale: pulseAnim }] }]} />
@@ -713,9 +735,11 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
       <Modal visible={!!actionMenuFor} transparent animationType="fade" onRequestClose={closeActionMenu}>
         <TouchableOpacity style={styles.actionOverlay} activeOpacity={1} onPress={closeActionMenu}>
           <View style={styles.actionMenu}>
-            <TouchableOpacity style={styles.actionItem} onPress={handleReply}>
-              <Text style={styles.actionText}>Reply</Text>
-            </TouchableOpacity>
+            {!accountUnavailable && (
+              <TouchableOpacity style={styles.actionItem} onPress={handleReply}>
+                <Text style={styles.actionText}>Reply</Text>
+              </TouchableOpacity>
+            )}
             <TouchableOpacity style={styles.actionItem} onPress={openReactionPicker}>
               <Text style={styles.actionText}>React</Text>
             </TouchableOpacity>
@@ -732,7 +756,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
             <TouchableOpacity style={styles.actionItem} onPress={handleForward}>
               <Text style={styles.actionText}>Forward</Text>
             </TouchableOpacity>
-            {actionMenuFor?.user_id === currentUser.id && actionMenuFor?.message_type === 'text' && (
+            {actionMenuFor?.user_id === currentUser.id && actionMenuFor?.message_type === 'text' && !accountUnavailable && (
               <TouchableOpacity style={styles.actionItem} onPress={handleEdit}>
                 <Text style={styles.actionText}>Edit</Text>
               </TouchableOpacity>
@@ -872,6 +896,13 @@ const styles = StyleSheet.create({
   },
   recordingText: { color: '#8A6100', fontSize: 13 },
   cancelText: { color: colors.danger, fontSize: 13, fontWeight: '600' },
+
+  unavailableBanner: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    backgroundColor: colors.surface, paddingVertical: spacing.lg, paddingHorizontal: spacing.lg,
+    borderTopWidth: 1, borderTopColor: colors.border
+  },
+  unavailableText: { color: colors.textMuted, fontSize: 14 },
 
   actionOverlay: { flex: 1, backgroundColor: colors.overlay, justifyContent: 'center', alignItems: 'center' },
   actionMenu: { backgroundColor: colors.background, borderRadius: radii.md, width: 220, paddingVertical: spacing.sm, ...shadow.md },
