@@ -109,7 +109,7 @@ A local Expo Module (Android Kotlin / iOS Swift / web no-op) that forces the OS 
 
 ### Phase 0 — Finish What Is Started (right now)
 - Call timeout — auto-cancel unanswered ring after 60s — DONE (server-authoritative, deployed). Server `call_signaling.js`: `armRingTimeout` on `call:invite`, `clearRingTimeout` on accept/reject/end/disconnect, fires the shared `endCallByServer(io, callId, { reason, status })` primitive which emits the existing `call:ended` with a `reason`. Client `CallScreen.js`: shows "No answer" to the caller, plus a 65s failsafe timer. Still needs a real 2-device confirmation test.
-- Ringtone playback — file exists at assets/ringtone.mp3, rebuild done, audio NOT yet confirmed on real device
+- Ringtone playback — WIRED in CallScreen.js (useAudioPlayer + 4s seekTo(0)/play() loop; `stopRinging()` runs before accept so it releases the audio output before expo-call-audio takes MODE_IN_COMMUNICATION). Android JS bundle verified. STILL NEEDS a real 2-device test: (a) ringtone actually plays + loops on the callee, (b) clean handoff to call audio on accept with no dead air / mic failure, (c) ring stops on reject / remote cancel / 60s timeout. `expo-audio` in this SDK actually does expose `player.loop` — the interval approach is the documented project convention (Section D) but could be revisited.
 - Account deletion — schema mapped, blocked on product decision (see Section C)
 - GIPHY attribution — "Powered by GIPHY" badge not added to MediaPickerSheet.js
 - Diagnostic console.logs in ChatScreen.js — still present from unresolved camera bug, need cleanup
@@ -280,8 +280,8 @@ For https URLs: download via FileSystem.downloadAsync first.
 require() paths resolved at Metro bundle time. Missing asset crashes entire app on load.
 Never reference a bundled asset via require() until the file actually exists on disk.
 
-### expo-audio does not auto-loop
-After play() completes, player stays paused. Use setInterval calling seekTo(0) + play() every N seconds.
+### expo-audio does not auto-loop (project convention)
+After play() completes the player stays paused at the end. Convention here is setInterval calling seekTo(0) + play() every N seconds (used by the CallScreen ringtone). NOTE: `expo-audio ~57` actually does expose `player.loop = true` on AudioPlayer — if you switch to it, verify gapless behavior on a real device first and update this note + CLAUDE.md's Phase 0 line.
 
 ### Health check false positive
 curl health returning ok does NOT mean routes work.
