@@ -102,3 +102,223 @@ A local Expo Module (Android Kotlin / iOS Swift / web no-op) that forces the OS 
 - **`.env` in the repo root contains server-side secrets** (`JWT_SECRET`, `SMTP_*`) left over from the backend. It is gitignored and **not read by this app** — the client has no `.env` loading.
 - `add_conversation_activity_client.js` is a one-off codemod (already applied to `ChatListScreen.js`); it's not part of the build.
 - `assets/ringtone.mp3` now exists, but the ringtone playback in `CallScreen.js` is still commented out (`useAudioPlayer(require(...))` + `.play()` calls) — only vibration is active for incoming calls.
+
+---
+
+## SECTION A — FULL PRODUCT ROADMAP
+
+### Phase 0 — Finish What Is Started (right now)
+- Call timeout — auto-cancel unanswered ring after N seconds — NEXT FEATURE, not yet built
+- Ringtone playback — file exists at assets/ringtone.mp3, rebuild done, audio NOT yet confirmed on real device
+- Account deletion — schema mapped, blocked on product decision (see Section C)
+- GIPHY attribution — "Powered by GIPHY" badge not added to MediaPickerSheet.js
+- Diagnostic console.logs in ChatScreen.js — still present from unresolved camera bug, need cleanup
+- LoginScreen.js / SignupScreen.js — still on old green WhatsApp theme, not restyled
+
+### Phase 1 — Foundation (store requirements + security)
+- HTTPS — needs a domain name first, Let's Encrypt will not issue for bare IP
+- Push notifications — needs expo-notifications + backend Expo push API
+- Rate limiting on login/signup
+- Password reset flow
+- Username system — currently phone-number only, affects all future social features
+
+### Phase 2 — Complete Calling
+- Call timeout — next feature
+- Call glare handling — two people calling each other simultaneously, not yet tested
+- Bluetooth audio routing — speaker toggle exists, device selection does not
+- ICE reconnect on network drop — currently just ends the call
+- Group calling — needs SFU architecture (LiveKit/mediasoup/Janus researched, not started)
+
+### Phase 3 — Complete Settings
+- Appearance / Dark mode — needs theme.js converted to React Context first, touches 15+ files, must be one dedicated pass
+- Notifications settings
+- Export chat — belongs in ChatScreen menu NOT Settings
+- Two-step verification — needs real session model first
+
+### Phase 4 — Modern Chat (all free tier, no external APIs)
+- Reply Later inbox
+- Send Later / scheduled messages
+- Temporary chat mode
+- Disappearing messages
+- Message to Event/Task/Reminder conversion
+- Expense splitting in groups
+- Shared group pinboard
+- Group Decisions
+- Polls
+- Meeting Point / live location
+- View-once media
+- File sharing
+
+### Phase 5 — AI Features
+- One-tap translation — FREE, Android ML Kit on-device
+- Voice message to transcript — FREE, ML Kit on-device
+- Ask this chat — needs LLM API, costs money per call
+- Catch me up summaries — needs LLM API
+- Message smart extraction (flight ticket to calendar) — needs LLM API
+- Semantic search — needs embeddings
+- Remember this — free first pass with local storage
+- Follow-up detection — needs LLM API
+
+### Phase 6 — Social
+- Stories, Close friends, Public profiles, Discover
+
+### Phase 7 — Communities
+- Communities, Channels, Topics, Roles, Moderation
+
+### Phase 8 — Events and Real Life
+- Event mode (RSVP + chat + album + expenses in one)
+- Shared trip albums
+- Group memories timeline
+
+### Phase 9 — Scale (only when needed)
+- PostgreSQL, Redis, S3 object storage, CDN, TURN scaling, Observability
+
+### iOS — Separate Track
+- Not started
+- CRITICAL: iOS 26 enforces CallKit + PushKit at OS level at runtime
+- If app receives VoIP push and does not report to CallKit immediately, OS kills the app
+- Current Socket.io call architecture works on Android but will NOT survive iOS backgrounding
+- When iOS begins, budget new native work for CallKit + PushKit from day one
+
+---
+
+## SECTION B — ENTERPRISE DEVELOPMENT RULES (MANDATORY)
+
+### Core Principle
+You are working on an existing production software product. Do NOT behave like a code generator.
+Understand first, verify dependencies, design correctly, implement completely, integrate, test, verify, only then report completion.
+Do not use the user as a debugger. Do not wait for the user to discover missing dependencies or broken integrations.
+
+### Before Writing Any Code
+- Read all relevant existing files, not just the obvious one
+- Trace the complete execution path: UI → component → state → API → backend → DB → response → rendering
+- Identify every file directly AND indirectly affected
+- Check existing dependencies, routes, DB schema, auth logic, environment variables
+- Never assume how anything works — inspect it first
+
+### Never Do These
+- Start coding without investigation
+- Discover a missing dependency after writing code
+- Implement only the happy path
+- Make isolated fixes without checking where else the assumption exists
+- Duplicate logic that already exists
+- Say Done or Working without actually validating
+- Fake completion
+
+### Required Workflow for Every Non-Trivial Task
+Phase 1 — Discover: inspect repo, identify complete implementation path
+Phase 2 — Understand: how does current system work
+Phase 3 — Impact analysis: what is affected directly and indirectly
+Phase 4 — Design: choose implementation that fits existing architecture, do not code yet
+Phase 5 — Dependency check: verify everything required exists
+Phase 6 — Implement: complete change across all layers
+Phase 7 — Integrate: verify all contracts match Frontend to API to Backend to DB
+Phase 8 — Validate: build, type check, runtime check
+Phase 9 — Debug: if anything fails, fix root cause, revalidate
+Phase 10 — Final review: if deployed to millions today, what breaks? Fix those things.
+Phase 11 — Report: what changed, what was integrated, what was validated, what remains
+
+### Reporting Completed Work
+Always provide:
+- Changed: what was actually changed
+- Integration: which existing systems were integrated
+- Dependencies: what was required and whether handled
+- Validation: what checks were performed
+- Remaining issues: only genuine unresolved items
+
+### Error Handling (every feature must consider)
+Invalid input, missing input, malformed requests, unauthorized, unauthenticated, missing records, duplicate records, DB failures, network failures, timeout, race conditions, concurrent requests, partial failure
+
+### Security (every feature must check)
+Authentication, authorization, ownership, input validation, output validation, file/MIME validation, file size limits, injection risks, sensitive data exposure, rate limiting
+
+---
+
+## SECTION C — PENDING DECISIONS (user must decide)
+
+### Account Deletion
+DB schema is fully mapped. Three options — user must choose one:
+1. Hard delete — user messages vanish from other people's history too
+2. Anonymize — keep messages, replace name and id with "Deleted User"
+3. Soft delete — mark account inactive, keep all data, block login and discovery
+This is a store requirement — Google Play and Apple both mandate in-app account deletion.
+Tables affected: conversation_members, messages, message_deletions, message_reactions, calls, call_deletions, privacy_settings, blocked_users
+
+---
+
+## SECTION D — KNOWN DEAD ENDS AND GOTCHAS
+
+### Tenor API is permanently dead
+Google shut down Tenor API on June 30 2026. Do not reference Tenor anywhere.
+GIPHY is the real integration. Endpoints: /gifs/search and /stickers/search.
+
+### react-native-incall-manager is broken in this project
+Resolves as null at runtime on physical devices. Replaced by custom expo-call-audio module.
+Do NOT use react-native-incall-manager. Pending cleanup: npm uninstall react-native-incall-manager.
+
+### requireAuth is a plain default export
+ALWAYS: const requireAuth = require('../middleware/auth')
+NEVER: const { requireAuth } = require('../middleware/auth')
+This caused a real production crash before.
+
+### Mojibake emoji corruption
+Raw emoji in source files gets corrupted by PowerShell 5.1 non-UTF-8 writes.
+Use Ionicons for all icons. Use Unicode escape sequences for any emoji in strings.
+Check any file: grep -P "[^\x00-\x7F]" filename — should return nothing.
+
+### RTCView blank video
+Never use StyleSheet.absoluteFillObject for RTCView.
+Always use explicit pixel dimensions: width: Dimensions.get('window').width, height: Dimensions.get('window').height
+
+### expo-media-library SDK 57
+Import from expo-media-library/legacy not expo-media-library.
+saveToLibraryAsync requires a real local file — not base64 string or https URL.
+For base64: write to temp file via FileSystem.writeAsStringAsync first.
+For https URLs: download via FileSystem.downloadAsync first.
+
+### Ringtone require() crash
+require() paths resolved at Metro bundle time. Missing asset crashes entire app on load.
+Never reference a bundled asset via require() until the file actually exists on disk.
+
+### expo-audio does not auto-loop
+After play() completes, player stays paused. Use setInterval calling seekTo(0) + play() every N seconds.
+
+### Health check false positive
+curl health returning ok does NOT mean routes work.
+Always also run: pm2 logs chat-server --lines 30 --nostream
+
+### Machine identity
+PC weekends: guru@Guru, path C:\Users\GuruD\wave, PowerShell 5.1
+Laptop weekdays: guru@laptop, path ~/Downloads/my-chat-app, Linux bash
+EC2 always: ubuntu@ip-172-31-46-32, path /home/ubuntu/chat-server
+Always confirm whoami && hostname && pwd if terminal context is ambiguous.
+
+---
+
+## SECTION E — KEY ARCHITECTURAL DECISIONS AFFECTING FUTURE FEATURES
+
+### Theme Context refactor must happen before dark mode
+theme.js is currently a static import. Dark mode requires React Context.
+This touches every screen file (15+). Must be one complete dedicated pass.
+Do not build more screens before this that will need retrofitting.
+
+### Username system affects all social features
+Build username system before any feature that assumes phone-based identity.
+
+### Session model needed before security features
+Currently stateless JWTs. Two-step verification, linked devices, log out all devices all require real session tracking first.
+
+### Object storage needed before media-heavy features
+Currently base64 in SQLite. Migrate to S3 before Stories, shared albums, any media-heavy feature.
+
+### Group calling needs SFU
+P2P mesh does not scale past 4 users. SFU is correct architecture.
+Options: LiveKit, mediasoup, Janus Gateway. Verify New Architecture compatibility before adopting any.
+
+### Build call timeout in a way that glare handling can reuse
+Call glare handling is coming right after timeout. Build timeout logic so glare handler plugs into the same system, not a duplicate.
+
+---
+
+*Last updated: Session 3 — Laptop setup, GIF/Sticker fix, Claude Code transition*
+*Always read this entire file before touching any code.*
