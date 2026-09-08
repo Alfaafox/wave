@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Alert } from 'react-native';
 import { signup } from '../utils/api';
-import { AuthShell, AuthTabs, AuthField } from '../components/AuthUI';
+import { AuthShell, AuthTabs, AuthField, isValidEmail } from '../components/AuthUI';
 import LoginBarButton from '../components/LoginBarButton';
 
 export default function SignupScreen({ goToLogin }) {
@@ -9,6 +9,7 @@ export default function SignupScreen({ goToLogin }) {
   const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [emailError, setEmailError] = useState(null);
   const [loading, setLoading] = useState(false);
 
   const handleSignup = async () => {
@@ -18,6 +19,11 @@ export default function SignupScreen({ goToLogin }) {
 
     if (!cleanName || !cleanPhone || !cleanEmail || !password) {
       Alert.alert('Missing info', 'Please fill in every field.');
+      return;
+    }
+    // Format-check the email before anything touches the network.
+    if (!isValidEmail(cleanEmail)) {
+      setEmailError('Please enter a valid email address');
       return;
     }
     if (cleanPhone.length < 10) {
@@ -73,7 +79,11 @@ export default function SignupScreen({ goToLogin }) {
         autoCorrect={false}
         keyboardType="email-address"
         value={email}
-        onChangeText={setEmail}
+        onChangeText={(text) => {
+          setEmail(text);
+          if (emailError) setEmailError(null);
+        }}
+        error={emailError}
         returnKeyType="next"
       />
 

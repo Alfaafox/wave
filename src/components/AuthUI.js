@@ -16,6 +16,18 @@ import WaveMark from './WaveMark';
 
 const TOP_INSET = (Platform.OS === 'android' ? StatusBar.currentHeight || 24 : 48) + spacing.lg;
 
+// Pragmatic email format check, shared by the login and signup screens so
+// an obviously-malformed address is caught inline before any request goes
+// out. Not full RFC 5322 (that grammar is enormous and mostly theoretical),
+// but it enforces the parts that matter: some local-part characters, an
+// "@", a domain, a dot, and a 2+ char TLD, with no whitespace anywhere.
+// Rejects "guru", "guru@gmail", "guru@.com", "@gmail.com", "a b@x.com".
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+export function isValidEmail(value) {
+  return EMAIL_REGEX.test(String(value || '').trim());
+}
+
 // Shared chrome for the auth screens: white background top to bottom,
 // keyboard-aware scroll, logo pinned near the top, everything else stacked
 // below it. No bottom decoration - the page ends in white. The tagline and
@@ -71,13 +83,14 @@ export function AuthField({
   secureToggle = false,
   style,
   containerStyle,
+  error,
   ...inputProps
 }) {
   const [hidden, setHidden] = useState(secureToggle);
   return (
     <View style={[styles.fieldWrap, containerStyle]}>
       {label ? <Text style={styles.fieldLabel}>{label}</Text> : null}
-      <View style={styles.inputRow}>
+      <View style={[styles.inputRow, error ? styles.inputRowError : null]}>
         {prefix ? <Text style={styles.prefix}>{prefix}</Text> : null}
         <TextInput
           placeholderTextColor={colors.textMuted}
@@ -101,6 +114,7 @@ export function AuthField({
           </Pressable>
         ) : null}
       </View>
+      {error ? <Text style={styles.fieldError}>{error}</Text> : null}
     </View>
   );
 }
@@ -166,6 +180,12 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     borderRadius: radii.md,
     backgroundColor: colors.background,
+  },
+  inputRowError: { borderColor: colors.danger },
+  fieldError: {
+    color: colors.danger,
+    fontSize: 12,
+    marginTop: spacing.xs,
   },
   input: {
     flex: 1,

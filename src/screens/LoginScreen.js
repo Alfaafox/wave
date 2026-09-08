@@ -1,19 +1,28 @@
 import React, { useState } from 'react';
 import { Alert, StyleSheet } from 'react-native';
 import { login, SERVER_URL } from '../utils/api';
-import { AuthShell, AuthTabs, AuthField, AuthLink } from '../components/AuthUI';
+import { AuthShell, AuthTabs, AuthField, AuthLink, isValidEmail } from '../components/AuthUI';
 import LoginBarButton from '../components/LoginBarButton';
 import { spacing } from '../theme';
 
 export default function LoginScreen({ onLoggedIn, goToSignup, goToForgotPassword }) {
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
+  const [identifierError, setIdentifierError] = useState(null);
   const [loading, setLoading] = useState(false);
 
   const handleLogin = async () => {
     const id = identifier.trim();
     if (!id || !password) {
       Alert.alert('Missing info', 'Enter your phone number or email, and your password.');
+      return;
+    }
+    // This field accepts a phone number OR an email. Only email-shaped input
+    // (contains "@") is format-checked here - the same "@" rule the server
+    // uses to decide how to look the account up. A phone number is left for
+    // the server to validate.
+    if (id.includes('@') && !isValidEmail(id)) {
+      setIdentifierError('Please enter a valid email address');
       return;
     }
     setLoading(true);
@@ -46,7 +55,11 @@ export default function LoginScreen({ onLoggedIn, goToSignup, goToForgotPassword
         autoCorrect={false}
         keyboardType="email-address"
         value={identifier}
-        onChangeText={setIdentifier}
+        onChangeText={(text) => {
+          setIdentifier(text);
+          if (identifierError) setIdentifierError(null);
+        }}
+        error={identifierError}
         returnKeyType="next"
       />
 
