@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useMemo } from 'react';
 import {
   View, Text, FlatList, TextInput, TouchableOpacity, StyleSheet,
   KeyboardAvoidingView, Platform, Image, Alert, ActivityIndicator,
@@ -19,6 +19,7 @@ import MediaPickerSheet from '../components/MediaPickerSheet';
 import ImageViewerModal from '../components/ImageViewerModal';
 import UserProfileModal from '../components/UserProfileModal';
 import ContactNotificationSettings from './ContactNotificationSettings';
+import TypingIndicator from '../components/TypingIndicator';
 import { colors, spacing, radii, typography, shadow } from '../theme';
 import { Ionicons } from '@expo/vector-icons';
 import { WALLPAPER_STORAGE_KEY, AUTOSAVE_STORAGE_KEY, getWallpaperColor } from '../utils/chatPreferences';
@@ -51,7 +52,9 @@ function AudioBubble({ uri, isMine }) {
 export default function ChatScreen({ token, currentUser, conversationId, otherUser, isGroup, groupName, onBack, onStartCall }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
-  const [isOtherTyping, setIsOtherTyping] = useState(false);
+  // 3-state typing indicator for whoever last started typing in this chat.
+  //   state: 'gone' | 'typing' | 'paused'
+  const [typing, setTyping] = useState({ state: 'gone', userId: null, name: '' });
   const [isOnline, setIsOnline] = useState(false);
   const [sendingImage, setSendingImage] = useState(false);
   const [sendingCameraImage, setSendingCameraImage] = useState(false);
@@ -71,7 +74,12 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
   const autoSaveRef = useRef(false);
   const listRef = useRef(null);
   const socketRef = useRef(null);
+  // Receiver-side safety timer (auto typing->pause after 4s, pause->gone after 30s).
   const typingTimeoutRef = useRef(null);
+  // Sender-side: timestamp of the last typing:start emit (throttle to 1/sec)
+  // and the pending "emit typing:pause 1.5s after the last keystroke" timer.
+  const typingStartSentRef = useRef(0);
+  const pauseEmitRef = useRef(null);
   const pulseAnim = useRef(new Animated.Value(1)).current;
 
   const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
@@ -139,10 +147,35 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
       if (!response?.ok) console.warn('Failed to join conversation:', response?.error);
     });
 
+    // The user we're currently showing an indicator for. Kept in a ref (not
+    // just state) so socket handlers and safety timers can read/compare it
+    // synchronously without a stale closure.
+    let shownTyperId = null;
+    const goGone = () => {
+      shownTyperId = null;
+      clearTimeout(typingTimeoutRef.current);
+      setTyping({ state: 'gone', userId: null, name: '' });
+    };
+    // Receiver safety net: without a follow-up event, TYPING self-demotes to
+    // PAUSED after 4s, and PAUSED disappears after 30s.
+    const armTypingSafety = (fromState) => {
+      clearTimeout(typingTimeoutRef.current);
+      if (fromState === 'typing') {
+        typingTimeoutRef.current = setTimeout(() => {
+          setTyping((cur) => (cur.state === 'typing' ? { ...cur, state: 'paused' } : cur));
+          typingTimeoutRef.current = setTimeout(goGone, 30000);
+        }, 4000);
+      } else if (fromState === 'paused') {
+        typingTimeoutRef.current = setTimeout(goGone, 30000);
+      }
+    };
+
     const handleMessage = (msg) => {
       if (msg.conversationId === conversationId) {
         setMessages((prev) => [...prev, msg]);
-        setIsOtherTyping(false);
+        if (msg.user_id !== currentUser.id && (shownTyperId == null || shownTyperId === msg.user_id)) {
+          goGone();
+        }
 
         if (autoSaveRef.current && msg.message_type === 'image' && msg.user_id !== currentUser.id) {
           MediaLibrary.saveToLibraryAsync(msg.content).catch((err) => {
@@ -151,12 +184,23 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
         }
       }
     };
-    const handleTyping = ({ conversationId: cid, userId }) => {
-      if (cid === conversationId && userId !== currentUser.id) {
-        setIsOtherTyping(true);
-        clearTimeout(typingTimeoutRef.current);
-        typingTimeoutRef.current = setTimeout(() => setIsOtherTyping(false), 3000);
-      }
+    const handleTypingStart = ({ conversationId: cid, userId: uid, name }) => {
+      if (cid !== conversationId || uid === currentUser.id) return;
+      shownTyperId = uid;
+      setTyping({ state: 'typing', userId: uid, name: name || '' });
+      armTypingSafety('typing');
+    };
+    const handleTypingPause = ({ conversationId: cid, userId: uid, name }) => {
+      if (cid !== conversationId || uid === currentUser.id) return;
+      shownTyperId = uid;
+      setTyping({ state: 'paused', userId: uid, name: name || '' });
+      armTypingSafety('paused');
+    };
+    const handleTypingStop = ({ conversationId: cid, userId: uid }) => {
+      if (cid !== conversationId || uid === currentUser.id) return;
+      // Ignore a stop from someone who isn't the one we're showing (e.g. a
+      // different group member who just sent a message).
+      if (shownTyperId == null || shownTyperId === uid) goGone();
     };
     const handlePresence = ({ userId, online }) => {
       if (!isGroup && otherUser && userId === otherUser.id) setIsOnline(online);
@@ -184,7 +228,9 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
 
     socket.on('message', handleMessage);
     socket.on('reactionUpdate', handleReactionUpdate);
-    socket.on('typing', handleTyping);
+    socket.on('typing:start', handleTypingStart);
+    socket.on('typing:pause', handleTypingPause);
+    socket.on('typing:stop', handleTypingStop);
     socket.on('presence', handlePresence);
     socket.on('delivered', handleDelivered);
     socket.on('read', handleRead);
@@ -194,7 +240,9 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     return () => {
       isMounted = false;
       socket.off('message', handleMessage);
-      socket.off('typing', handleTyping);
+      socket.off('typing:start', handleTypingStart);
+      socket.off('typing:pause', handleTypingPause);
+      socket.off('typing:stop', handleTypingStop);
       socket.off('presence', handlePresence);
       socket.off('delivered', handleDelivered);
       socket.off('read', handleRead);
@@ -202,8 +250,20 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
       socket.off('messageDeletedForEveryone', handleDeletedForEveryone);
       socket.off('reactionUpdate', handleReactionUpdate);
       clearTimeout(typingTimeoutRef.current);
+      // Leaving the chat (unmount) - tell the other side we're done typing,
+      // and drop any pending "pause" emit.
+      clearTimeout(pauseEmitRef.current);
+      socket.emit('typing:stop', { conversationId });
     };
   }, [conversationId, token]);
+
+  // Sending, editing, or leaving the chat ends our typing state on the other
+  // side immediately (a real 'typing:stop', not just a decay).
+  const emitTypingStop = () => {
+    clearTimeout(pauseEmitRef.current);
+    typingStartSentRef.current = 0; // next keystroke re-announces immediately
+    socketRef.current?.emit('typing:stop', { conversationId });
+  };
 
   const sendMessage = (content = input, messageType = 'text') => {
     if (!content.trim() && messageType === 'text') return;
@@ -221,13 +281,26 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
       }
     });
 
+    emitTypingStop();
     if (messageType === 'text') setInput('');
     setReplyTo(null);
   };
 
   const handleTypingInput = (text) => {
     setInput(text);
-    socketRef.current?.emit('typing', { conversationId });
+
+    // typing:start on every keystroke, throttled to at most once per second.
+    const now = Date.now();
+    if (now - typingStartSentRef.current >= 1000) {
+      typingStartSentRef.current = now;
+      socketRef.current?.emit('typing:start', { conversationId });
+    }
+
+    // typing:pause 1.5s after the last keystroke if nothing else happens.
+    clearTimeout(pauseEmitRef.current);
+    pauseEmitRef.current = setTimeout(() => {
+      socketRef.current?.emit('typing:pause', { conversationId });
+    }, 1500);
   };
 
   const formatDuration = (ms) => {
@@ -512,11 +585,13 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
         Alert.alert('Could not edit', response?.error || 'Try again.');
       }
     });
+    emitTypingStop();
     setEditingMessage(null);
     setInput('');
   };
 
   const cancelEdit = () => {
+    emitTypingStop();
     setEditingMessage(null);
     setInput('');
   };
@@ -535,7 +610,24 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
 
   const headerSubtitle = isGroup || accountUnavailable
     ? null
-    : (isOtherTyping ? 'typing...' : isOnline ? 'Online' : otherUser?.last_seen ? `Last seen ${new Date(otherUser.last_seen).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : '');
+    : (typing.state === 'typing' ? 'typing...' : isOnline ? 'Online' : otherUser?.last_seen ? `Last seen ${new Date(otherUser.last_seen).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : '');
+
+  const typingName = typing.name || (isGroup ? '' : otherUser?.name || '');
+
+  // Stable element so FlatList re-renders (not remounts) the indicator on
+  // unrelated ChatScreen updates - otherwise the dot animation restarts on
+  // every keystroke.
+  const typingFooter = useMemo(
+    () => (
+      <TypingIndicator
+        state={typing.state}
+        isGroup={isGroup}
+        name={typingName}
+        avatarUri={isGroup ? null : (otherUser?.profilePicture || null)}
+      />
+    ),
+    [typing.state, typingName, isGroup, otherUser?.profilePicture]
+  );
 
   return (
     <KeyboardAvoidingView
@@ -574,6 +666,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
         keyExtractor={(item) => String(item.id)}
         contentContainerStyle={{ padding: spacing.md }}
         onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: true })}
+        ListFooterComponent={typingFooter}
         renderItem={({ item }) => {
           const isMine = item.user_id === currentUser.id;
 
