@@ -1,18 +1,19 @@
 // src/utils/contactPrefs.js
 //
-// Per-contact, device-local notification preferences. Nothing here is synced
-// to the account or the backend - same approach as src/utils/chatPreferences.js.
+// Per-contact notification preferences.
 //
-//   wave_mute_{userId}          -> 'true' | 'false'
+//   wave_mute_conv_{conversationId} -> 'true' | 'false'
+//       Mute is now SERVER-BACKED (conversation_members.mute_notifications,
+//       enforced in the push service). This AsyncStorage key is only a
+//       device-local CACHE so the toggle renders instantly on modal open with
+//       no loading state - the server value is the source of truth and is
+//       reconciled on open. Written by ChatScreen alongside the API call.
 //   wave_notifications_{userId} -> JSON of the shape below
-//
-// The mute flag is deliberately its own key (not folded into the JSON) so the
-// UserProfileModal mute toggle and ContactNotificationSettings can both read
-// and write it without having to parse the whole prefs blob.
+//       Still purely device-local (tone/vibrate/popup are not synced yet).
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-export const muteKey = (userId) => `wave_mute_${userId}`;
+export const muteCacheKey = (conversationId) => `wave_mute_conv_${conversationId}`;
 export const notifKey = (userId) => `wave_notifications_${userId}`;
 
 export const VIBRATE_OPTIONS = ['Default', 'Always', 'Only when silent', 'Never'];
@@ -25,17 +26,20 @@ export const DEFAULT_NOTIFICATION_PREFS = {
   popup: true, // true = show the message text in the notification; false = just "New message"
 };
 
-export async function getMute(userId) {
+// Read/write the device-local mute cache for a conversation. The server
+// (routes/conversations.js mute endpoints) is authoritative; these just make
+// the toggle instant on open.
+export async function getMuteCache(conversationId) {
   try {
-    return (await AsyncStorage.getItem(muteKey(userId))) === 'true';
+    return (await AsyncStorage.getItem(muteCacheKey(conversationId))) === 'true';
   } catch {
     return false;
   }
 }
 
-export async function setMute(userId, value) {
+export async function setMuteCache(conversationId, value) {
   try {
-    await AsyncStorage.setItem(muteKey(userId), value ? 'true' : 'false');
+    await AsyncStorage.setItem(muteCacheKey(conversationId), value ? 'true' : 'false');
   } catch {
     /* best effort */
   }

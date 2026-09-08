@@ -128,6 +128,20 @@ export function deleteConversation(token, conversationId) {
   });
 }
 
+// Per-user, per-conversation push-notification mute (server-backed).
+export function getConversationMute(token, conversationId) {
+  return request(`/conversations/${conversationId}/mute`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` }
+  });
+}
+export function setConversationMute(token, conversationId, muted) {
+  return request(`/conversations/${conversationId}/${muted ? 'mute' : 'unmute'}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` }
+  });
+}
+
 export function updateProfilePicture(token, base64Image) {
   return request('/users/me/picture', {
     method: 'PUT',

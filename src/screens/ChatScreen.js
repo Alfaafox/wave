@@ -12,7 +12,7 @@ import {
   AudioModule, RecordingPresets, setAudioModeAsync,
   useAudioRecorder, useAudioRecorderState, useAudioPlayer, useAudioPlayerStatus
 } from 'expo-audio';
-import { getMessages, getConversations, SERVER_URL } from '../utils/api';
+import { getMessages, getConversations, setConversationMute, SERVER_URL } from '../utils/api';
 import { connectSocket } from '../utils/socket';
 import { ReactionPicker, ReactionPills } from '../components/MessageReactions';
 import MediaPickerSheet from '../components/MediaPickerSheet';
@@ -23,7 +23,7 @@ import TypingIndicator from '../components/TypingIndicator';
 import { colors, spacing, radii, typography, shadow } from '../theme';
 import { Ionicons } from '@expo/vector-icons';
 import { WALLPAPER_STORAGE_KEY, AUTOSAVE_STORAGE_KEY, getWallpaperColor } from '../utils/chatPreferences';
-import { getMute, setMute } from '../utils/contactPrefs';
+import { getMuteCache, setMuteCache } from '../utils/contactPrefs';
 
 const EDIT_DELETE_WINDOW_MS = 15 * 60 * 1000;
 
@@ -103,19 +103,39 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     })();
   }, []);
 
-  // Per-contact mute state, lifted here so the toggle in UserProfileModal and
-  // the one in ContactNotificationSettings stay in sync (both write the same
-  // 'wave_mute_{userId}' key via contactPrefs). 1:1 chats only.
+  // Per-conversation notification mute. Server-backed
+  // (conversation_members.mute_notifications, enforced by the push service);
+  // AsyncStorage is only a device cache so the toggle is instant on modal
+  // open. State is lifted here so the toggle in UserProfileModal and the one
+  // in ContactNotificationSettings stay in sync. 1:1 chats only for now.
+  const muteTouchedRef = useRef(false);
   useEffect(() => {
     if (isGroup || !otherUser?.id) return;
     let cancelled = false;
-    getMute(otherUser.id).then((v) => { if (!cancelled) setContactMuted(v); });
+    getMuteCache(conversationId).then((v) => { if (!cancelled) setContactMuted(v); });
     return () => { cancelled = true; };
-  }, [isGroup, otherUser?.id]);
+  }, [isGroup, otherUser?.id, conversationId]);
 
-  const handleMuteChange = (value) => {
+  // `opts.skipSync` = the value came FROM the server (modal reconcile on open):
+  // update local state + cache only, and never let it override a toggle the
+  // user has already made this session.
+  const handleMuteChange = async (value, opts = {}) => {
+    if (opts.skipSync) {
+      if (muteTouchedRef.current) return;
+    } else {
+      muteTouchedRef.current = true;
+    }
     setContactMuted(value);
-    if (otherUser?.id) setMute(otherUser.id, value);
+    setMuteCache(conversationId, value);
+    if (opts.skipSync || !conversationId) return;
+    try {
+      await setConversationMute(token, conversationId, value);
+    } catch (e) {
+      // the server didn't get it, so push would still fire - roll the UI back
+      setContactMuted(!value);
+      setMuteCache(conversationId, !value);
+      Alert.alert('Could not update', 'Check your connection and try again.');
+    }
   };
 
   useEffect(() => {

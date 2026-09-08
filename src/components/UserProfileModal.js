@@ -17,7 +17,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing, radii, typography } from '../theme';
 import {
-  getConversations, getPrivacySettings, blockUser, unblockUser, deleteConversation,
+  getConversations, getConversationMute, getPrivacySettings, blockUser, unblockUser, deleteConversation,
 } from '../utils/api';
 import { isFavourite, toggleFavourite } from '../utils/favourites';
 import FavouriteStar from './FavouriteStar';
@@ -103,6 +103,14 @@ export default function UserProfileModal({
           if (cancelled) return;
           const list = data?.blockedUsers || [];
           setBlocked(list.some((u) => u.id === otherId));
+        })
+        .catch(() => {});
+      // Mute: the server is the source of truth. The toggle already shows the
+      // cached value instantly; this reconciles it on open (e.g. changed on
+      // another device). `skipSync` tells ChatScreen not to POST it back.
+      getConversationMute(token, conversationId)
+        .then((r) => {
+          if (!cancelled && typeof r?.muted === 'boolean') onMuteChange?.(r.muted, { skipSync: true });
         })
         .catch(() => {});
     }
