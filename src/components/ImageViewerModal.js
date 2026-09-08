@@ -65,13 +65,15 @@ export default function ImageViewerModal({ visible, uri, onClose, onSave, saving
           <Ionicons name="close" size={26} color="#fff" />
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.saveButton} onPress={onSave} disabled={saving} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
-          {saving ? (
-            <ActivityIndicator size="small" color="#fff" />
-          ) : (
-            <Ionicons name="download-outline" size={24} color="#fff" />
-          )}
-        </TouchableOpacity>
+        {onSave && (
+          <TouchableOpacity style={styles.saveButton} onPress={onSave} disabled={saving} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
+            {saving ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Ionicons name="download-outline" size={24} color="#fff" />
+            )}
+          </TouchableOpacity>
+        )}
       </Animated.View>
     </Modal>
   );

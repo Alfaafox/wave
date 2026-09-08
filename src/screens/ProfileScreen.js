@@ -4,10 +4,12 @@ import * as ImagePicker from 'expo-image-picker';
 import { updateProfilePicture } from '../utils/api';
 import { colors, spacing, radii, shadow } from '../theme';
 import { Ionicons } from '@expo/vector-icons';
+import ImageViewerModal from '../components/ImageViewerModal';
 
 export default function ProfileScreen({ token, currentUser, onBack, onLogout, onProfilePictureUpdated }) {
   const [uploading, setUploading] = useState(false);
   const [localPicture, setLocalPicture] = useState(currentUser?.profilePicture || null);
+  const [viewerOpen, setViewerOpen] = useState(false);
 
   const changePicture = async () => {
     try {
@@ -16,18 +18,30 @@ export default function ProfileScreen({ token, currentUser, onBack, onLogout, on
         Alert.alert('Permission needed', 'We need access to your photos.');
         return;
       }
+      // Gallery only - no launchCameraAsync here. `allowsEditing: true` is
+      // expo-image-picker's built-in crop UI (shown after selection, before
+      // this resolves), so no separate crop library is needed. `quality: 1`
+      // keeps the full-size cropped original - not a downscaled thumbnail.
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['images'],
-        quality: 0.4,
-        base64: true,
         allowsEditing: true,
-        aspect: [1, 1]
+        aspect: [1, 1],
+        quality: 1,
+        base64: true,
       });
       if (result.canceled) return;
 
       const asset = result.assets?.[0];
       if (!asset?.base64) {
         Alert.alert('Error', 'Could not read the selected image.');
+        return;
+      }
+
+      // The backend stores the data URI verbatim in a TEXT column and the
+      // REST JSON body limit is 8 MB. Reject oversized images up front with a
+      // clear message instead of letting the request fail cryptically.
+      if (asset.base64.length > 7 * 1024 * 1024) {
+        Alert.alert('Photo too large', 'That image is too big. Please pick a smaller one.');
         return;
       }
 
@@ -44,6 +58,13 @@ export default function ProfileScreen({ token, currentUser, onBack, onLogout, on
     }
   };
 
+  // Tapping the avatar views it full-screen; if there's no photo yet, fall
+  // through to the picker so the avatar is still a way to add one.
+  const handleAvatarPress = () => {
+    if (localPicture) setViewerOpen(true);
+    else changePicture();
+  };
+
   return (
     <View style={styles.container}>
       <View style={styles.header}>
@@ -53,22 +74,32 @@ export default function ProfileScreen({ token, currentUser, onBack, onLogout, on
         <Text style={styles.headerTitle}>Profile</Text>
       </View>
 
-      <TouchableOpacity style={styles.avatarWrap} onPress={changePicture} disabled={uploading} activeOpacity={0.8}>
-        {localPicture ? (
-          <Image source={{ uri: localPicture }} style={styles.avatarImage} />
-        ) : (
-          <View style={styles.avatar}>
-            <Text style={styles.avatarText}>
-              {(currentUser?.name || '?').charAt(0).toUpperCase()}
-            </Text>
-          </View>
-        )}
-        {uploading ? (
-          <ActivityIndicator style={styles.avatarOverlay} color={colors.accent} />
-        ) : (
-          <Text style={styles.changeText}>Tap to change photo</Text>
-        )}
-      </TouchableOpacity>
+      <View style={styles.avatarWrap}>
+        <TouchableOpacity onPress={handleAvatarPress} disabled={uploading} activeOpacity={0.8}>
+          {localPicture ? (
+            <Image source={{ uri: localPicture }} style={styles.avatarImage} />
+          ) : (
+            <View style={styles.avatar}>
+              <Text style={styles.avatarText}>
+                {(currentUser?.name || '?').charAt(0).toUpperCase()}
+              </Text>
+            </View>
+          )}
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.changeBtn}
+          onPress={changePicture}
+          disabled={uploading}
+          activeOpacity={0.7}
+        >
+          {uploading ? (
+            <ActivityIndicator color={colors.accent} />
+          ) : (
+            <Text style={styles.changeText}>Change profile picture</Text>
+          )}
+        </TouchableOpacity>
+      </View>
 
       <View style={styles.card}>
         <View style={styles.field}>
@@ -90,6 +121,12 @@ export default function ProfileScreen({ token, currentUser, onBack, onLogout, on
       <TouchableOpacity style={styles.logoutButton} onPress={onLogout} activeOpacity={0.8}>
         <Text style={styles.logoutText}>Log out</Text>
       </TouchableOpacity>
+
+      <ImageViewerModal
+        visible={viewerOpen && !!localPicture}
+        uri={localPicture}
+        onClose={() => setViewerOpen(false)}
+      />
     </View>
   );
 }
@@ -112,8 +149,8 @@ const styles = StyleSheet.create({
   },
   avatarImage: { width: 96, height: 96, borderRadius: 48 },
   avatarText: { color: colors.textOnAccent, fontSize: 38, fontWeight: '600' },
-  avatarOverlay: { marginTop: spacing.sm },
-  changeText: { marginTop: spacing.sm, color: colors.accent, fontSize: 13, fontWeight: '500' },
+  changeBtn: { marginTop: spacing.md, paddingVertical: spacing.xs, paddingHorizontal: spacing.md, minHeight: 24, justifyContent: 'center' },
+  changeText: { color: colors.accent, fontSize: 14, fontWeight: '600' },
 
   card: {
     marginHorizontal: spacing.lg, backgroundColor: colors.surface,
