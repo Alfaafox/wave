@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "673076448831",
+    "project_id": "wave-chat-55078",
+    "storage_bucket": "wave-chat-55078.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:673076448831:android:a0f3bb5ef98a65a51a728a",
+        "android_client_info": {
+          "package_name": "com.mycompany.wave"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCBdZAOiR7LCrGQBMgp1FQm8lF2ooV4YwM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

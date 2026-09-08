@@ -20,7 +20,8 @@
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
-      "package": "com.mycompany.wave"
+      "package": "com.mycompany.wave",
+      "googleServicesFile": "./google-services.json"
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -38,7 +39,13 @@
       "expo-audio",
       "@config-plugins/react-native-webrtc",
       "expo-font",
-      "expo-asset"
+      "expo-asset",
+      [
+        "expo-notifications",
+        {
+          "color": "#2C6BED"
+        }
+      ]
     ],
     "extra": {
       "eas": {

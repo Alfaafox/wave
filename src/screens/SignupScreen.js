@@ -1,22 +1,37 @@
 import React, { useState } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, ActivityIndicator, ScrollView } from 'react-native';
+import { Alert } from 'react-native';
 import { signup } from '../utils/api';
+import { AuthShell, AuthTabs, AuthField } from '../components/AuthUI';
+import LoginBarButton from '../components/LoginBarButton';
 
 export default function SignupScreen({ goToLogin }) {
   const [name, setName] = useState('');
+  const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
-  const [phoneNumber, setPhoneNumber] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
 
   const handleSignup = async () => {
-    if (!name || !email || !password || !phoneNumber) {
-      Alert.alert('Missing info', 'Please fill in all fields');
+    const cleanName = name.trim();
+    const cleanPhone = phone.replace(/[^\d]/g, '');
+    const cleanEmail = email.trim();
+
+    if (!cleanName || !cleanPhone || !cleanEmail || !password) {
+      Alert.alert('Missing info', 'Please fill in every field.');
       return;
     }
+    if (cleanPhone.length < 10) {
+      Alert.alert('Check your number', 'Enter your 10-digit phone number.');
+      return;
+    }
+    if (password.length < 6) {
+      Alert.alert('Weak password', 'Use at least 6 characters.');
+      return;
+    }
+
     setLoading(true);
     try {
-      await signup(name.trim(), email.trim(), password, phoneNumber.trim());
+      await signup(cleanName, cleanEmail, password, `+91${cleanPhone}`);
       Alert.alert(
         'Check your email',
         'We sent you a verification link. Verify your account, then log in.',
@@ -30,64 +45,50 @@ export default function SignupScreen({ goToLogin }) {
   };
 
   return (
-    <ScrollView contentContainerStyle={styles.container}>
-      <Text style={styles.title}>Create account</Text>
+    <AuthShell>
+      <AuthTabs active="signup" onLogin={goToLogin} />
 
-      <TextInput
-        style={styles.input}
-        placeholder="Full name"
-        placeholderTextColor="#999"
+      <AuthField
+        label="Full name"
+        placeholder="Jane Doe"
         value={name}
         onChangeText={setName}
+        returnKeyType="next"
       />
-      <TextInput
-        style={styles.input}
-        placeholder="Email"
-        placeholderTextColor="#999"
+
+      <AuthField
+        label="Phone number"
+        prefix="+91"
+        placeholder="98765 43210"
+        keyboardType="phone-pad"
+        value={phone}
+        onChangeText={setPhone}
+        returnKeyType="next"
+      />
+
+      <AuthField
+        label="Email"
+        placeholder="you@example.com"
         autoCapitalize="none"
+        autoCorrect={false}
         keyboardType="email-address"
         value={email}
         onChangeText={setEmail}
+        returnKeyType="next"
       />
-      <TextInput
-        style={styles.input}
-        placeholder="Phone number (e.g. +911234567890)"
-        placeholderTextColor="#999"
-        keyboardType="phone-pad"
-        value={phoneNumber}
-        onChangeText={setPhoneNumber}
-      />
-      <TextInput
-        style={styles.input}
-        placeholder="Password"
-        placeholderTextColor="#999"
-        secureTextEntry
+
+      <AuthField
+        label="Password"
+        placeholder="At least 6 characters"
+        secureToggle
+        autoCapitalize="none"
         value={password}
         onChangeText={setPassword}
+        returnKeyType="go"
+        onSubmitEditing={handleSignup}
       />
 
-      <TouchableOpacity style={styles.button} onPress={handleSignup} disabled={loading}>
-        {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>Sign Up</Text>}
-      </TouchableOpacity>
-
-      <TouchableOpacity onPress={goToLogin} style={{ marginTop: 20 }}>
-        <Text style={styles.link}>Already have an account? Log in</Text>
-      </TouchableOpacity>
-    </ScrollView>
+      <LoginBarButton label="Create Account" onPress={handleSignup} loading={loading} />
+    </AuthShell>
   );
 }
-
-const styles = StyleSheet.create({
-  container: { flexGrow: 1, justifyContent: 'center', padding: 24, backgroundColor: '#fff' },
-  title: { fontSize: 28, fontWeight: 'bold', textAlign: 'center', marginBottom: 32, color: '#075E54' },
-  input: {
-    borderWidth: 1, borderColor: '#ddd', borderRadius: 10, padding: 14,
-    marginBottom: 14, fontSize: 16, backgroundColor: '#fff', color: '#000'
-  },
-  button: {
-    backgroundColor: '#075E54', borderRadius: 10, padding: 16,
-    alignItems: 'center', marginTop: 8
-  },
-  buttonText: { color: '#fff', fontSize: 16, fontWeight: '600' },
-  link: { color: '#075E54', textAlign: 'center', fontSize: 14 }
-});

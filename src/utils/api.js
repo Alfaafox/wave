@@ -34,10 +34,12 @@ export function signup(name, email, password, phoneNumber) {
   });
 }
 
-export function login(email, password) {
+// `identifier` is an email or a phone number — the server decides which by
+// the presence of "@" and matches phones via phone_hash.
+export function login(identifier, password) {
   return request('/auth/login', {
     method: 'POST',
-    body: JSON.stringify({ email, password })
+    body: JSON.stringify({ identifier, password })
   });
 }
 
@@ -45,6 +47,47 @@ export function resendVerification(email) {
   return request('/auth/resend-verification', {
     method: 'POST',
     body: JSON.stringify({ email })
+  });
+}
+
+// Password reset. `forgotPassword` takes an email or phone number; the
+// response `channel` ('email' | 'sms') says how the reset was sent. The
+// email path is completed on a server-rendered web page; `resetPassword`
+// and `verifyOtp` back the (not-yet-shipped) in-app phone path.
+export function forgotPassword(identifier) {
+  return request('/auth/forgot-password', {
+    method: 'POST',
+    body: JSON.stringify({ identifier })
+  });
+}
+
+export function resetPassword(token, newPassword) {
+  return request('/auth/reset-password', {
+    method: 'POST',
+    body: JSON.stringify({ token, newPassword })
+  });
+}
+
+export function verifyOtp(identifier, otp) {
+  return request('/auth/verify-otp', {
+    method: 'POST',
+    body: JSON.stringify({ identifier, otp })
+  });
+}
+
+// Push notifications. `body` is { token, deviceId, platform }.
+export function registerPushToken(authToken, body) {
+  return request('/notifications/token', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${authToken}` },
+    body: JSON.stringify(body)
+  });
+}
+export function unregisterPushToken(authToken, deviceId) {
+  return request('/notifications/token', {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${authToken}` },
+    body: JSON.stringify({ deviceId })
   });
 }
 

@@ -1,11 +1,13 @@
-﻿import React, { useState, useEffect } from 'react';
-import { View, ActivityIndicator } from 'react-native';
+﻿import React, { useState, useEffect, useCallback } from 'react';
+import { View, ActivityIndicator, Alert, AppState } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { StatusBar } from 'expo-status-bar';
 import { KeyboardProvider } from 'react-native-keyboard-controller';
+import * as Notifications from 'expo-notifications';
 
 import LoginScreen from './src/screens/LoginScreen';
 import SignupScreen from './src/screens/SignupScreen';
+import ForgotPasswordScreen from './src/screens/ForgotPasswordScreen';
 import ChatListScreen from './src/screens/ChatListScreen';
 import ChatScreen from './src/screens/ChatScreen';
 import ProfileScreen from './src/screens/ProfileScreen';
@@ -20,9 +22,18 @@ import ChatsSettingsScreen from './src/screens/ChatsSettingsScreen';
 import AppearanceSettingsScreen from './src/screens/AppearanceSettingsScreen';
 import NotificationsSettingsScreen from './src/screens/NotificationsSettingsScreen';
 import InviteFriendScreen from './src/screens/InviteFriendScreen';
+import NotificationBanner from './src/components/NotificationBanner';
 import { colors } from './src/theme';
 import { disconnectSocket, connectSocket } from './src/utils/socket';
-import { getCurrentUser } from './src/utils/api';
+import { getCurrentUser, getConversations } from './src/utils/api';
+import {
+  getPermissionStatus,
+  hasAskedPermission,
+  markAskedPermission,
+  requestPermission,
+  registerDeviceForPush,
+  unregisterDeviceForPush,
+} from './src/utils/notifications';
 
 const TAB_SCREENS = ['chatList', 'calls', 'updates'];
 
@@ -35,6 +46,7 @@ export default function App() {
   const [socket, setSocket] = useState(null);
   const [incomingCall, setIncomingCall] = useState(null);
   const [outgoingCall, setOutgoingCall] = useState(null);
+  const [banner, setBanner] = useState(null);
 
   useEffect(() => {
     (async () => {
@@ -95,6 +107,59 @@ export default function App() {
     };
   }, [token]);
 
+  // Foreground/background presence. The socket stays connected either way (call
+  // signaling rides it), but we tell the server which state we're in: while
+  // foregrounded the server delivers messages live over the socket and skips
+  // the push; once backgrounded it sends a "New message" push instead. Without
+  // this the server always sees a connected socket as "online" and no message
+  // push ever fires. Calls are unaffected - call:invite still uses raw online
+  // state and its own wake-up push.
+  useEffect(() => {
+    if (!socket) return undefined;
+    let bgTimer = null;
+    const clearBgTimer = () => {
+      if (bgTimer) {
+        clearTimeout(bgTimer);
+        bgTimer = null;
+      }
+    };
+    const emitForeground = () => {
+      clearBgTimer();
+      socket.emit('presence:foreground');
+    };
+    const scheduleBackground = () => {
+      clearBgTimer();
+      // grace period: a quick app-switch (camera, share sheet, permission
+      // dialog) shouldn't bounce delivery over to push and straight back.
+      bgTimer = setTimeout(() => {
+        bgTimer = null;
+        socket.emit('presence:background');
+      }, 8000);
+    };
+    // Re-assert current state on (re)connect - socket.io may reconnect after a
+    // network blip while we're backgrounded, and a fresh server socket defaults
+    // to "foreground".
+    const syncNow = () => {
+      socket.emit(
+        AppState.currentState === 'active' ? 'presence:foreground' : 'presence:background'
+      );
+    };
+
+    syncNow();
+    socket.on('connect', syncNow);
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next === 'active') emitForeground();
+      else if (next === 'background') scheduleBackground();
+      // 'inactive' (iOS transient / app switcher) is intentionally ignored
+    });
+
+    return () => {
+      clearBgTimer();
+      socket.off('connect', syncNow);
+      sub.remove();
+    };
+  }, [socket]);
+
   const handleLoggedIn = async (newToken, user) => {
     await AsyncStorage.setItem('token', newToken);
     await AsyncStorage.setItem('user', JSON.stringify(user));
@@ -128,11 +193,19 @@ export default function App() {
   };
 
   const handleLogout = async () => {
+    // Tell the server to drop this device's push token BEFORE we lose the
+    // auth token. Best-effort - never let it block logout.
+    try {
+      await unregisterDeviceForPush(token);
+    } catch (e) {
+      /* ignore */
+    }
     await AsyncStorage.removeItem('token');
     await AsyncStorage.removeItem('user');
     disconnectSocket();
     setToken(null);
     setCurrentUser(null);
+    setBanner(null);
     setScreen('login');
   };
 
@@ -144,6 +217,114 @@ export default function App() {
   const startCall = (targetUserId, targetName, callType) => {
     setOutgoingCall({ mode: 'outgoing', targetUserId, targetName, callType });
   };
+
+  // --- Push notifications -------------------------------------------------
+
+  // Ask for permission once (with a plain-language reason first), then
+  // register this device. Runs whenever we have a session - on fresh login
+  // and on a restored session at launch. Denial is fine: the app just won't
+  // get notifications.
+  useEffect(() => {
+    if (!token) return undefined;
+    let cancelled = false;
+
+    (async () => {
+      const status = await getPermissionStatus();
+      if (cancelled) return;
+
+      if (status === 'granted') {
+        registerDeviceForPush(token);
+        return;
+      }
+      if (status !== 'undetermined') return; // 'denied' - respect it
+      if (await hasAskedPermission()) return; // asked before, don't nag
+
+      Alert.alert(
+        'Turn on notifications?',
+        'Wave can let you know about new messages and calls even when the app is closed. You can change this later in your phone settings.',
+        [
+          { text: 'Not now', style: 'cancel', onPress: () => markAskedPermission() },
+          {
+            text: 'Turn on',
+            onPress: async () => {
+              const granted = await requestPermission();
+              if (granted && !cancelled) registerDeviceForPush(token);
+            },
+          },
+        ]
+      );
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
+  // Where a tapped / in-app-tapped notification takes the user.
+  const routeFromNotification = useCallback(
+    async (data) => {
+      if (!data || !token) return;
+
+      if (data.type === 'call') {
+        setIncomingCall({
+          mode: 'incoming',
+          callId: data.callId,
+          fromUserId: Number(data.fromUserId),
+          fromName: data.fromName,
+          callType: data.callType,
+        });
+        return;
+      }
+      if (data.type === 'missedCall') {
+        setScreen('calls');
+        return;
+      }
+      if (data.type === 'message' && data.conversationId) {
+        try {
+          const list = await getConversations(token);
+          const conv = (Array.isArray(list) ? list : []).find(
+            (c) => String(c.id) === String(data.conversationId)
+          );
+          if (conv) {
+            setActiveChat({
+              conversationId: conv.id,
+              otherUser: conv.with,
+              isGroup: !!conv.is_group,
+              groupName: conv.name,
+            });
+            setScreen('chat');
+            return;
+          }
+        } catch (e) {
+          /* fall through to the list */
+        }
+        setScreen('chatList');
+      }
+    },
+    [token]
+  );
+
+  // Foreground receipt -> our own banner. Tap (foreground or from the tray,
+  // including a cold start) -> route.
+  useEffect(() => {
+    const recvSub = Notifications.addNotificationReceivedListener((notification) => {
+      const content = notification?.request?.content;
+      if (!content) return;
+      setBanner({ title: content.title, body: content.body, data: content.data || {} });
+    });
+    const respSub = Notifications.addNotificationResponseReceivedListener((response) => {
+      routeFromNotification(response?.notification?.request?.content?.data || {});
+    });
+    // app launched by tapping a notification
+    Notifications.getLastNotificationResponseAsync().then((response) => {
+      if (response) routeFromNotification(response.notification?.request?.content?.data || {});
+    });
+
+    return () => {
+      recvSub.remove();
+      respSub.remove();
+    };
+  }, [routeFromNotification]);
 
   if (loading) {
     return (
@@ -161,10 +342,17 @@ export default function App() {
       <View style={{ flex: 1 }}>
         <View style={{ flex: 1 }}>
           {screen === 'login' && (
-            <LoginScreen onLoggedIn={handleLoggedIn} goToSignup={() => setScreen('signup')} />
+            <LoginScreen
+              onLoggedIn={handleLoggedIn}
+              goToSignup={() => setScreen('signup')}
+              goToForgotPassword={() => setScreen('forgotPassword')}
+            />
           )}
           {screen === 'signup' && (
             <SignupScreen goToLogin={() => setScreen('login')} />
+          )}
+          {screen === 'forgotPassword' && (
+            <ForgotPasswordScreen onBack={() => setScreen('login')} />
           )}
           {screen === 'chatList' && (
             <ChatListScreen
@@ -251,6 +439,12 @@ export default function App() {
       {socket && outgoingCall && (
         <CallScreen socket={socket} callInfo={outgoingCall} onEndCall={() => setOutgoingCall(null)} />
       )}
+
+      <NotificationBanner
+        banner={banner}
+        onDismiss={() => setBanner(null)}
+        onPress={(data) => routeFromNotification(data)}
+      />
     </KeyboardProvider>
   );
 }

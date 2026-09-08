@@ -1,20 +1,24 @@
 import React, { useState } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, ActivityIndicator } from 'react-native';
+import { Alert, StyleSheet } from 'react-native';
 import { login, SERVER_URL } from '../utils/api';
+import { AuthShell, AuthTabs, AuthField, AuthLink } from '../components/AuthUI';
+import LoginBarButton from '../components/LoginBarButton';
+import { spacing } from '../theme';
 
-export default function LoginScreen({ onLoggedIn, goToSignup }) {
-  const [email, setEmail] = useState('');
+export default function LoginScreen({ onLoggedIn, goToSignup, goToForgotPassword }) {
+  const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
 
   const handleLogin = async () => {
-    if (!email || !password) {
-      Alert.alert('Missing info', 'Please enter both email and password');
+    const id = identifier.trim();
+    if (!id || !password) {
+      Alert.alert('Missing info', 'Enter your phone number or email, and your password.');
       return;
     }
     setLoading(true);
     try {
-      const data = await login(email.trim(), password);
+      const data = await login(id, password);
       setLoading(false);
       if (data.reactivated) {
         Alert.alert(
@@ -32,51 +36,40 @@ export default function LoginScreen({ onLoggedIn, goToSignup }) {
   };
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>Wave</Text>
-      <Text style={styles.subtitle}>Log in to continue</Text>
-      <Text style={styles.debug}>Server: {SERVER_URL}</Text>
+    <AuthShell>
+      <AuthTabs active="login" onSignup={goToSignup} />
 
-      <TextInput
-        style={styles.input}
-        placeholder="Email"
+      <AuthField
+        label="Phone number or email"
+        placeholder="you@example.com or 98765 43210"
         autoCapitalize="none"
+        autoCorrect={false}
         keyboardType="email-address"
-        value={email}
-        onChangeText={setEmail}
+        value={identifier}
+        onChangeText={setIdentifier}
+        returnKeyType="next"
       />
-      <TextInput
-        style={styles.input}
-        placeholder="Password"
-        secureTextEntry
+
+      <AuthField
+        label="Password"
+        placeholder="Your password"
+        secureToggle
+        autoCapitalize="none"
         value={password}
         onChangeText={setPassword}
+        returnKeyType="go"
+        onSubmitEditing={handleLogin}
       />
 
-      <TouchableOpacity style={styles.button} onPress={handleLogin} disabled={loading}>
-        {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>Log In</Text>}
-      </TouchableOpacity>
+      <AuthLink align="right" onPress={goToForgotPassword} style={styles.forgot}>
+        Forgot Password?
+      </AuthLink>
 
-      <TouchableOpacity onPress={goToSignup} style={{ marginTop: 20 }}>
-        <Text style={styles.link}>Don't have an account? Sign up</Text>
-      </TouchableOpacity>
-    </View>
+      <LoginBarButton onPress={handleLogin} loading={loading} />
+    </AuthShell>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, justifyContent: 'center', padding: 24, backgroundColor: '#fff' },
-  title: { fontSize: 36, fontWeight: 'bold', textAlign: 'center', color: '#075E54' },
-  subtitle: { fontSize: 16, textAlign: 'center', color: '#666', marginBottom: 8 },
-  debug: { fontSize: 11, textAlign: 'center', color: '#aaa', marginBottom: 24 },
-  input: {
-    borderWidth: 1, borderColor: '#ddd', borderRadius: 10, padding: 14,
-    marginBottom: 14, fontSize: 16
-  },
-  button: {
-    backgroundColor: '#075E54', borderRadius: 10, padding: 16,
-    alignItems: 'center', marginTop: 8
-  },
-  buttonText: { color: '#fff', fontSize: 16, fontWeight: '600' },
-  link: { color: '#075E54', textAlign: 'center', fontSize: 14 }
+  forgot: { marginTop: -spacing.sm, marginBottom: spacing.md },
 });
