@@ -1,13 +1,14 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import {
   View, Text, FlatList, TouchableOpacity, StyleSheet,
-  TextInput, Modal, Alert, RefreshControl, Image
+  TextInput, Modal, Alert, RefreshControl, Image, ScrollView
 } from 'react-native';
 import { getConversations, startConversation, createGroup, deleteConversation } from '../utils/api';
 import { connectSocket } from '../utils/socket';
 import { colors, spacing, radii, typography, shadow } from '../theme';
 import ContactPickerScreen from './ContactPickerScreen';
 import { Ionicons } from '@expo/vector-icons';
+import { getFavourites } from '../utils/favourites';
 
 function previewText(lastMessage) {
   if (!lastMessage) return 'No messages yet';
@@ -27,6 +28,11 @@ export default function ChatListScreen({ token, currentUser, onOpenChat, onLogou
   const [pickerMode, setPickerMode] = useState(null);
   const [groupNamingFor, setGroupNamingFor] = useState(null);
   const [groupNameInput, setGroupNameInput] = useState('');
+  const [favouriteIds, setFavouriteIds] = useState([]);
+
+  const loadFavourites = useCallback(() => {
+    getFavourites().then(setFavouriteIds).catch(() => {});
+  }, []);
 
   const loadConversations = useCallback(async () => {
     try {
@@ -39,6 +45,7 @@ export default function ChatListScreen({ token, currentUser, onOpenChat, onLogou
 
   useEffect(() => {
     loadConversations();
+    loadFavourites();
     const socket = connectSocket(token);
     const handlePresence = ({ userId, online }) => {
       setOnlineIds((prev) => ({ ...prev, [userId]: online }));
@@ -58,10 +65,11 @@ export default function ChatListScreen({ token, currentUser, onOpenChat, onLogou
       socket.off('delivered', refreshOnActivity);
       socket.off('conversationActivity', refreshOnActivity);
     };
-  }, [loadConversations, token]);
+  }, [loadConversations, loadFavourites, token]);
 
   const handleRefresh = async () => {
     setRefreshing(true);
+    loadFavourites();
     await loadConversations();
     setRefreshing(false);
   };
@@ -164,6 +172,16 @@ export default function ChatListScreen({ token, currentUser, onOpenChat, onLogou
     });
   }, [conversations, searchQuery]);
 
+  // Favourites strip: the 1:1 conversations whose other party is in
+  // 'wave_favourites'. Derived from the same conversation list so it always
+  // has a fresh name/picture and a conversationId to open.
+  const favouriteConversations = useMemo(() => {
+    if (!favouriteIds.length) return [];
+    return conversations.filter(
+      (c) => !c.is_group && c.with?.id != null && favouriteIds.includes(c.with.id)
+    );
+  }, [conversations, favouriteIds]);
+
   if (pickerMode) {
     return (
       <ContactPickerScreen
@@ -208,6 +226,46 @@ export default function ChatListScreen({ token, currentUser, onOpenChat, onLogou
           onChangeText={setSearchQuery}
         />
       </View>
+
+      {favouriteConversations.length > 0 && (
+        <View style={styles.favStrip}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.favStripContent}
+          >
+            {favouriteConversations.map((c) => (
+              <TouchableOpacity
+                key={String(c.id)}
+                style={styles.favItem}
+                activeOpacity={0.7}
+                onPress={() => onOpenChat({
+                  conversationId: c.id,
+                  otherUser: c.with,
+                  isGroup: false,
+                  groupName: c.name,
+                })}
+              >
+                <View>
+                  {c.with.profilePicture ? (
+                    <Image source={{ uri: c.with.profilePicture }} style={styles.favAvatarImage} />
+                  ) : (
+                    <View style={styles.favAvatar}>
+                      <Text style={styles.favAvatarText}>
+                        {(c.with.name || '?').charAt(0).toUpperCase()}
+                      </Text>
+                    </View>
+                  )}
+                  <View style={styles.favStarBadge}>
+                    <Ionicons name="star" size={10} color="#FFD700" />
+                  </View>
+                </View>
+                <Text style={styles.favName} numberOfLines={1}>{c.with.name || 'Chat'}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
+      )}
 
       <FlatList
         data={filteredConversations}
@@ -343,6 +401,26 @@ const styles = StyleSheet.create({
     borderRadius: radii.pill, paddingHorizontal: spacing.md, height: 40
   },
   searchInput: { flex: 1, fontSize: 15, color: colors.textPrimary, padding: 0 },
+
+  favStrip: {
+    borderBottomWidth: 1, borderBottomColor: colors.divider,
+    paddingVertical: spacing.sm,
+  },
+  favStripContent: { paddingHorizontal: spacing.lg, gap: spacing.lg },
+  favItem: { alignItems: 'center', width: 60 },
+  favAvatar: {
+    width: 52, height: 52, borderRadius: 26, backgroundColor: colors.accent,
+    justifyContent: 'center', alignItems: 'center',
+  },
+  favAvatarImage: { width: 52, height: 52, borderRadius: 26 },
+  favAvatarText: { color: colors.textOnAccent, fontSize: 20, fontWeight: '600' },
+  favStarBadge: {
+    position: 'absolute', top: -2, right: -2,
+    width: 16, height: 16, borderRadius: 8, backgroundColor: colors.background,
+    justifyContent: 'center', alignItems: 'center',
+    borderWidth: 1, borderColor: colors.divider,
+  },
+  favName: { marginTop: 4, fontSize: 11, color: colors.textSecondary, textAlign: 'center' },
 
   empty: { textAlign: 'center', marginTop: 60, color: colors.textMuted },
 

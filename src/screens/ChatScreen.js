@@ -17,9 +17,12 @@ import { connectSocket } from '../utils/socket';
 import { ReactionPicker, ReactionPills } from '../components/MessageReactions';
 import MediaPickerSheet from '../components/MediaPickerSheet';
 import ImageViewerModal from '../components/ImageViewerModal';
+import UserProfileModal from '../components/UserProfileModal';
+import ContactNotificationSettings from './ContactNotificationSettings';
 import { colors, spacing, radii, typography, shadow } from '../theme';
 import { Ionicons } from '@expo/vector-icons';
 import { WALLPAPER_STORAGE_KEY, AUTOSAVE_STORAGE_KEY, getWallpaperColor } from '../utils/chatPreferences';
+import { getMute, setMute } from '../utils/contactPrefs';
 
 const EDIT_DELETE_WINDOW_MS = 15 * 60 * 1000;
 
@@ -62,6 +65,9 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
   const [viewerImage, setViewerImage] = useState(null);
   const [savingViewerImage, setSavingViewerImage] = useState(false);
   const [wallpaperColor, setWallpaperColor] = useState(null);
+  const [profileModalOpen, setProfileModalOpen] = useState(false);
+  const [notifSettingsOpen, setNotifSettingsOpen] = useState(false);
+  const [contactMuted, setContactMuted] = useState(false);
   const autoSaveRef = useRef(false);
   const listRef = useRef(null);
   const socketRef = useRef(null);
@@ -89,6 +95,21 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
       autoSaveRef.current = savedAutoSave === 'true';
     })();
   }, []);
+
+  // Per-contact mute state, lifted here so the toggle in UserProfileModal and
+  // the one in ContactNotificationSettings stay in sync (both write the same
+  // 'wave_mute_{userId}' key via contactPrefs). 1:1 chats only.
+  useEffect(() => {
+    if (isGroup || !otherUser?.id) return;
+    let cancelled = false;
+    getMute(otherUser.id).then((v) => { if (!cancelled) setContactMuted(v); });
+    return () => { cancelled = true; };
+  }, [isGroup, otherUser?.id]);
+
+  const handleMuteChange = (value) => {
+    setContactMuted(value);
+    if (otherUser?.id) setMute(otherUser.id, value);
+  };
 
   useEffect(() => {
     if (recorderState.isRecording) {
@@ -526,10 +547,15 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
         <TouchableOpacity onPress={onBack} style={styles.backBtn}>
           <Ionicons name="arrow-back" size={24} color={colors.textPrimary} />
         </TouchableOpacity>
-        <View style={{ flex: 1 }}>
+        <TouchableOpacity
+          style={{ flex: 1 }}
+          activeOpacity={0.6}
+          disabled={isGroup ? false : !otherUser?.id}
+          onPress={() => setProfileModalOpen(true)}
+        >
           <Text style={styles.headerTitle}>{headerTitle}</Text>
           {!!headerSubtitle && <Text style={styles.headerSubtitle}>{headerSubtitle}</Text>}
-        </View>
+        </TouchableOpacity>
         {!isGroup && otherUser && onStartCall && !accountUnavailable && (
           <View style={{ flexDirection: 'row' }}>
             <TouchableOpacity onPress={() => onStartCall(otherUser.id, otherUser.name, 'audio')} style={styles.headerIconBtn}>
@@ -810,6 +836,33 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
           setSavingViewerImage(false);
         }}
       />
+
+      <UserProfileModal
+        visible={profileModalOpen}
+        onClose={() => setProfileModalOpen(false)}
+        token={token}
+        isGroup={isGroup}
+        groupName={groupName}
+        conversationId={conversationId}
+        otherUser={otherUser}
+        onStartCall={onStartCall}
+        muted={contactMuted}
+        onMuteChange={handleMuteChange}
+        onOpenNotifications={() => { setProfileModalOpen(false); setNotifSettingsOpen(true); }}
+        onLeaveGroup={onBack}
+      />
+
+      {notifSettingsOpen && !isGroup && !!otherUser?.id && (
+        <View style={styles.notifSettingsOverlay}>
+          <ContactNotificationSettings
+            userId={otherUser.id}
+            userName={otherUser.name}
+            muted={contactMuted}
+            onMuteChange={handleMuteChange}
+            onBack={() => { setNotifSettingsOpen(false); setProfileModalOpen(true); }}
+          />
+        </View>
+      )}
     </KeyboardAvoidingView>
   );
 }
@@ -827,6 +880,10 @@ const styles = StyleSheet.create({
   headerSubtitle: { color: colors.textSecondary, fontSize: 12, marginTop: 2 },
   headerIconBtn: { marginLeft: spacing.md, padding: 2 },
   headerIcon: { fontSize: 20 },
+  notifSettingsOverlay: {
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+    backgroundColor: colors.background, zIndex: 100, elevation: 100,
+  },
 
   bubble: { maxWidth: '78%', borderRadius: radii.bubble, padding: spacing.md, marginBottom: spacing.sm },
   bubbleMine: {
