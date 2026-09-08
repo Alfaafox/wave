@@ -1,9 +1,14 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import SettingsSubScreenLayout from '../components/SettingsSubScreenLayout';
 import EditFieldScreen from '../components/EditFieldScreen';
-import { updateProfile, changePassword, deactivateAccount, deleteAccount } from '../utils/api';
+import { isValidEmail } from '../components/AuthUI';
+import {
+  updateProfile, changePassword, deactivateAccount, deleteAccount,
+  changeEmailInit, changeEmailVerifyIdentity, changeEmailSendNewOtp, changeEmailVerifyNew,
+  changePhoneInit, changePhoneVerifyIdentity, changePhoneSendNewOtp, changePhoneVerifyNew,
+} from '../utils/api';
 import { colors, spacing, radii, shadow } from '../theme';
 
 // Dedicated change-password screen. Kept local to this file since it's
@@ -77,12 +82,219 @@ function ChangePasswordScreen({ token, onBack }) {
   );
 }
 
+// Two-step OTP flow for changing the account email or phone number - both
+// are structurally identical, so one component handles both via `kind`.
+//   step 1  identity  - OTP to the CURRENT contact detail (phone first for an
+//                       email change, email first for a phone change; the
+//                       other is the fallback).
+//   step 2  ownership - the user types the NEW value, an OTP goes to it, they
+//                       enter that code, the value is updated.
+// SMS is not wired, so any OTP that would go to a phone shows a "check the
+// server logs" note instead of actually being delivered.
+function ChangeContactFlow({ kind, token, onUserUpdated, onBack }) {
+  const isEmail = kind === 'email';
+  const api = isEmail
+    ? { init: changeEmailInit, verifyId: changeEmailVerifyIdentity, sendNew: changeEmailSendNewOtp, verifyNew: changeEmailVerifyNew }
+    : { init: changePhoneInit, verifyId: changePhoneVerifyIdentity, sendNew: changePhoneSendNewOtp, verifyNew: changePhoneVerifyNew };
+  const title = isEmail ? 'Change Email' : 'Change Phone';
+
+  const [step, setStep] = useState('identity'); // identity | newValue | newOtp
+  const [identityInfo, setIdentityInfo] = useState(null);
+  const [newInfo, setNewInfo] = useState(null);
+  const [otp, setOtp] = useState('');
+  const [newInput, setNewInput] = useState('');
+  const [pendingValue, setPendingValue] = useState(''); // normalised value the ownership OTP is bound to
+  const [busy, setBusy] = useState(true);
+  const [error, setError] = useState('');
+
+  const runInit = async () => {
+    setBusy(true); setError('');
+    try {
+      const r = await api.init(token);
+      setIdentityInfo(r); setOtp('');
+    } catch (e) { setError(e.message); }
+    finally { setBusy(false); }
+  };
+  useEffect(() => { runInit(); }, []);
+
+  const targetPhrase = (info) => {
+    if (!info) return '';
+    return info.method === 'phone' ? `your phone ending in ${info.hint}` : `your email ${info.hint}`;
+  };
+
+  const submitIdentity = async () => {
+    if (otp.trim().length < 4) { setError('Enter the code you received.'); return; }
+    setBusy(true); setError('');
+    try {
+      await api.verifyId(token, otp.trim());
+      setStep('newValue'); setOtp(''); setNewInput('');
+    } catch (e) { setError(e.message); }
+    finally { setBusy(false); }
+  };
+
+  const submitNewValue = async () => {
+    setError('');
+    let value;
+    if (isEmail) {
+      value = newInput.trim().toLowerCase();
+      if (!isValidEmail(value)) { setError('Please enter a valid email address'); return; }
+    } else {
+      const digits = newInput.replace(/[^\d]/g, '');
+      if (digits.length < 10) { setError('Enter your 10-digit phone number.'); return; }
+      value = `+91${digits}`;
+    }
+    setBusy(true);
+    try {
+      const r = await api.sendNew(token, value);
+      setNewInfo(r); setPendingValue(value); setStep('newOtp'); setOtp('');
+    } catch (e) { setError(e.message); }
+    finally { setBusy(false); }
+  };
+
+  const submitNewOtp = async () => {
+    if (otp.trim().length < 4) { setError('Enter the code.'); return; }
+    setBusy(true); setError('');
+    try {
+      const r = await api.verifyNew(token, pendingValue, otp.trim());
+      onUserUpdated?.(isEmail ? { email: r.user.email } : { phoneNumber: r.user.phone_number });
+      Alert.alert(
+        isEmail ? 'Email updated' : 'Phone number updated',
+        isEmail ? `Your email is now ${r.user.email}.` : `Your phone number is now ${r.user.phone_number}.`,
+        [{ text: 'OK', onPress: onBack }]
+      );
+    } catch (e) { setError(e.message); setBusy(false); }
+  };
+
+  const resend = async () => {
+    setError('');
+    if (step === 'identity') return runInit();
+    setBusy(true);
+    try {
+      const r = await api.sendNew(token, pendingValue);
+      setNewInfo(r); setOtp('');
+    } catch (e) { setError(e.message); }
+    finally { setBusy(false); }
+  };
+
+  // Inline render helper (NOT a component - keeps the TextInput mounted
+  // across re-renders so it doesn't lose focus / re-fire autoFocus).
+  const otpCard = (prompt, onSubmit, cta) => (
+    <View style={styles.card}>
+      <Text style={styles.flowPrompt}>{prompt}</Text>
+      <TextInput
+        style={styles.input}
+        value={otp}
+        onChangeText={(t) => setOtp(t.replace(/[^\d]/g, '').slice(0, 6))}
+        placeholder="6-digit code"
+        placeholderTextColor={colors.textMuted}
+        keyboardType="number-pad"
+        maxLength={6}
+        autoFocus
+      />
+      {!!error && <Text style={styles.flowError}>{error}</Text>}
+      <TouchableOpacity style={styles.saveButton} onPress={onSubmit} disabled={busy} activeOpacity={0.85}>
+        {busy ? <ActivityIndicator color={colors.textOnAccent} /> : <Text style={styles.saveButtonText}>{cta}</Text>}
+      </TouchableOpacity>
+      <TouchableOpacity onPress={resend} disabled={busy} style={styles.flowLinkWrap}>
+        <Text style={styles.flowLink}>Resend code</Text>
+      </TouchableOpacity>
+    </View>
+  );
+
+  if (step === 'identity') {
+    return (
+      <SettingsSubScreenLayout title={title} onBack={onBack}>
+        {busy && !identityInfo && <ActivityIndicator color={colors.accent} style={{ marginTop: spacing.xxl }} />}
+        {identityInfo && (
+          <>
+            {identityInfo.smsNotWired && (
+              <Text style={styles.flowNote}>
+                SMS is not switched on yet - for now the code is printed in the server logs.
+              </Text>
+            )}
+            {otpCard(`First, confirm it is you. We sent a code to ${targetPhrase(identityInfo)}.`, submitIdentity, 'Verify')}
+          </>
+        )}
+        {!busy && !identityInfo && (
+          <View style={styles.card}>
+            <Text style={styles.flowError}>{error || 'Could not start. Try again.'}</Text>
+            <TouchableOpacity style={styles.saveButton} onPress={runInit} activeOpacity={0.85}>
+              <Text style={styles.saveButtonText}>Try again</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+      </SettingsSubScreenLayout>
+    );
+  }
+
+  if (step === 'newValue') {
+    return (
+      <SettingsSubScreenLayout title={title} onBack={onBack}>
+        <View style={styles.card}>
+          <Text style={styles.fieldLabel}>{isEmail ? 'New email address' : 'New phone number'}</Text>
+          {isEmail ? (
+            <TextInput
+              style={styles.input}
+              value={newInput}
+              onChangeText={setNewInput}
+              placeholder="you@example.com"
+              placeholderTextColor={colors.textMuted}
+              keyboardType="email-address"
+              autoCapitalize="none"
+              autoCorrect={false}
+              autoFocus
+            />
+          ) : (
+            <View style={styles.phoneRow}>
+              <Text style={styles.phonePrefix}>+91</Text>
+              <TextInput
+                style={styles.phoneInput}
+                value={newInput}
+                onChangeText={(t) => setNewInput(t.replace(/[^\d]/g, '').slice(0, 10))}
+                placeholder="98765 43210"
+                placeholderTextColor={colors.textMuted}
+                keyboardType="phone-pad"
+                maxLength={10}
+                autoFocus
+              />
+            </View>
+          )}
+          {!!error && <Text style={styles.flowError}>{error}</Text>}
+          <TouchableOpacity style={styles.saveButton} onPress={submitNewValue} disabled={busy} activeOpacity={0.85}>
+            {busy ? <ActivityIndicator color={colors.textOnAccent} /> : (
+              <Text style={styles.saveButtonText}>{isEmail ? 'Send code to new email' : 'Send code to new number'}</Text>
+            )}
+          </TouchableOpacity>
+        </View>
+      </SettingsSubScreenLayout>
+    );
+  }
+
+  // step === 'newOtp'
+  return (
+    <SettingsSubScreenLayout title={title} onBack={onBack}>
+      {newInfo?.smsNotWired && (
+        <Text style={styles.flowNote}>
+          SMS is not switched on yet - for now the code is printed in the server logs.
+        </Text>
+      )}
+      {otpCard(
+        isEmail
+          ? `We sent a code to ${pendingValue}.`
+          : `We sent a code to your new number ending in ${newInfo?.hint || ''}.`,
+        submitNewOtp,
+        isEmail ? 'Update email' : 'Update phone number'
+      )}
+    </SettingsSubScreenLayout>
+  );
+}
+
 function Bullets({ lines }) {
   return (
     <View style={{ marginTop: spacing.sm }}>
       {lines.map((line) => (
         <View key={line} style={styles.bulletRow}>
-          <Text style={styles.bulletDot}>{'•'}</Text>
+          <Text style={styles.bulletDot}>{'\u2022'}</Text>
           <Text style={styles.bulletText}>{line}</Text>
         </View>
       ))}
@@ -204,15 +416,10 @@ function DeleteAccountScreen({ token, onDone, onBack }) {
 export default function AccountSettingsScreen({ token, currentUser, onBack, onUserUpdated, onLogout }) {
   // Local sub-navigation, contained entirely within this section - App.js
   // doesn't know or care about any of these sub-screens.
-  const [subScreen, setSubScreen] = useState(null); // null | 'name' | 'email' | 'password' | 'deactivate' | 'delete'
+  const [subScreen, setSubScreen] = useState(null); // null | 'name' | 'email' | 'phone' | 'password' | 'deactivate' | 'delete'
 
   const saveName = async (newName) => {
     const result = await updateProfile(token, newName, currentUser?.email || '');
-    onUserUpdated?.({ name: result.user.name, email: result.user.email });
-  };
-
-  const saveEmail = async (newEmail) => {
-    const result = await updateProfile(token, currentUser?.name || '', newEmail);
     onUserUpdated?.({ name: result.user.name, email: result.user.email });
   };
 
@@ -231,13 +438,21 @@ export default function AccountSettingsScreen({ token, currentUser, onBack, onUs
 
   if (subScreen === 'email') {
     return (
-      <EditFieldScreen
-        title="Edit Email"
-        label="Email"
-        initialValue={currentUser?.email || ''}
-        placeholder="Your email"
-        keyboardType="email-address"
-        onSave={saveEmail}
+      <ChangeContactFlow
+        kind="email"
+        token={token}
+        onUserUpdated={onUserUpdated}
+        onBack={() => setSubScreen(null)}
+      />
+    );
+  }
+
+  if (subScreen === 'phone') {
+    return (
+      <ChangeContactFlow
+        kind="phone"
+        token={token}
+        onUserUpdated={onUserUpdated}
         onBack={() => setSubScreen(null)}
       />
     );
@@ -270,6 +485,13 @@ export default function AccountSettingsScreen({ token, currentUser, onBack, onUs
           <Text style={styles.rowLabel}>Email</Text>
           <View style={styles.rowRight}>
             <Text style={styles.rowValue} numberOfLines={1}>{currentUser?.email || '-'}</Text>
+            <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+          </View>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.row} onPress={() => setSubScreen('phone')} activeOpacity={0.6}>
+          <Text style={styles.rowLabel}>Phone number</Text>
+          <View style={styles.rowRight}>
+            <Text style={styles.rowValue} numberOfLines={1}>{currentUser?.phoneNumber || '-'}</Text>
             <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
           </View>
         </TouchableOpacity>
@@ -313,6 +535,18 @@ const styles = StyleSheet.create({
   },
   saveButton: { backgroundColor: colors.accent, borderRadius: radii.pill, paddingVertical: spacing.md, alignItems: 'center', marginTop: spacing.md },
   saveButtonText: { color: colors.textOnAccent, fontWeight: '600', fontSize: 15 },
+
+  flowPrompt: { fontSize: 14, color: colors.textPrimary, lineHeight: 20, marginBottom: spacing.md },
+  flowNote: { fontSize: 12, color: colors.warning, lineHeight: 17, marginBottom: spacing.md },
+  flowError: { fontSize: 13, color: colors.danger, marginTop: spacing.xs },
+  flowLinkWrap: { alignItems: 'center', paddingVertical: spacing.md },
+  flowLink: { fontSize: 14, color: colors.accent, fontWeight: '600' },
+  phoneRow: {
+    flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: colors.border,
+    borderRadius: radii.sm, marginBottom: spacing.xs
+  },
+  phonePrefix: { fontSize: 15, color: colors.textSecondary, fontWeight: '600', paddingLeft: spacing.md },
+  phoneInput: { flex: 1, padding: spacing.md, fontSize: 15, color: colors.textPrimary },
 
   dangerCard: { backgroundColor: colors.surface, borderRadius: radii.md, padding: spacing.lg, borderWidth: 1, borderColor: colors.danger, ...shadow.md },
   dangerTitle: { fontSize: 15, fontWeight: '600', color: colors.danger, marginBottom: spacing.xs },

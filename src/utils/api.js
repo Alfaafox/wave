@@ -1,4 +1,4 @@
-﻿export const SERVER_URL = 'http://13.232.16.85:3000';
+export const SERVER_URL = 'http://13.232.16.85:3000';
 
 async function request(path, options = {}) {
   const controller = new AbortController();
@@ -34,7 +34,7 @@ export function signup(name, email, password, phoneNumber) {
   });
 }
 
-// `identifier` is an email or a phone number — the server decides which by
+// `identifier` is an email or a phone number - the server decides which by
 // the presence of "@" and matches phones via phone_hash.
 export function login(identifier, password) {
   return request('/auth/login', {
@@ -230,3 +230,48 @@ export function clearCallHistory(token) {
   });
 }
 
+
+// --- Secure email / phone change (two OTP steps each, see routes/users.js) ---
+// changeEmailInit / changePhoneInit           -> { method: 'phone'|'email', hint, smsNotWired? }
+// change*VerifyIdentity(token, otp)            -> { verified: true }
+// change*SendNewOtp(token, newValue)          -> { sent: true, method, hint, smsNotWired? }
+// change*VerifyNew(token, newValue, otp)       -> { message, user }
+const authHeaders = (token) => ({ Authorization: `Bearer ${token}` });
+
+export function changeEmailInit(token) {
+  return request('/users/me/change-email/init', { method: 'POST', headers: authHeaders(token) });
+}
+export function changeEmailVerifyIdentity(token, otp) {
+  return request('/users/me/change-email/verify-identity', {
+    method: 'POST', headers: authHeaders(token), body: JSON.stringify({ otp })
+  });
+}
+export function changeEmailSendNewOtp(token, newEmail) {
+  return request('/users/me/change-email/verify-new', {
+    method: 'POST', headers: authHeaders(token), body: JSON.stringify({ newEmail })
+  });
+}
+export function changeEmailVerifyNew(token, newEmail, otp) {
+  return request('/users/me/change-email/verify-new', {
+    method: 'POST', headers: authHeaders(token), body: JSON.stringify({ newEmail, otp })
+  });
+}
+
+export function changePhoneInit(token) {
+  return request('/users/me/change-phone/init', { method: 'POST', headers: authHeaders(token) });
+}
+export function changePhoneVerifyIdentity(token, otp) {
+  return request('/users/me/change-phone/verify-identity', {
+    method: 'POST', headers: authHeaders(token), body: JSON.stringify({ otp })
+  });
+}
+export function changePhoneSendNewOtp(token, newPhone) {
+  return request('/users/me/change-phone/verify-new', {
+    method: 'POST', headers: authHeaders(token), body: JSON.stringify({ newPhone })
+  });
+}
+export function changePhoneVerifyNew(token, newPhone, otp) {
+  return request('/users/me/change-phone/verify-new', {
+    method: 'POST', headers: authHeaders(token), body: JSON.stringify({ newPhone, otp })
+  });
+}
