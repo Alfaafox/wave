@@ -49,13 +49,12 @@ function AudioBubble({ uri, isMine }) {
   );
 }
 
-export default function ChatScreen({ token, currentUser, conversationId, otherUser, isGroup, groupName, onBack, onStartCall }) {
+export default function ChatScreen({ token, currentUser, conversationId, otherUser, isGroup, groupName, presenceMap, onBack, onStartCall }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   // 3-state typing indicator for whoever last started typing in this chat.
   //   state: 'gone' | 'typing' | 'paused'
   const [typing, setTyping] = useState({ state: 'gone', userId: null, name: '' });
-  const [isOnline, setIsOnline] = useState(false);
   const [sendingImage, setSendingImage] = useState(false);
   const [sendingCameraImage, setSendingCameraImage] = useState(false);
   const [replyTo, setReplyTo] = useState(null);
@@ -202,9 +201,6 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
       // different group member who just sent a message).
       if (shownTyperId == null || shownTyperId === uid) goGone();
     };
-    const handlePresence = ({ userId, online }) => {
-      if (!isGroup && otherUser && userId === otherUser.id) setIsOnline(online);
-    };
     const handleDelivered = ({ conversationId: cid, messageIds }) => {
       if (cid !== conversationId) return;
       setMessages((prev) => prev.map((m) => (messageIds.includes(m.id) ? { ...m, delivered: 1 } : m)));
@@ -231,7 +227,6 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     socket.on('typing:start', handleTypingStart);
     socket.on('typing:pause', handleTypingPause);
     socket.on('typing:stop', handleTypingStop);
-    socket.on('presence', handlePresence);
     socket.on('delivered', handleDelivered);
     socket.on('read', handleRead);
     socket.on('messageEdited', handleEdited);
@@ -243,7 +238,6 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
       socket.off('typing:start', handleTypingStart);
       socket.off('typing:pause', handleTypingPause);
       socket.off('typing:stop', handleTypingStop);
-      socket.off('presence', handlePresence);
       socket.off('delivered', handleDelivered);
       socket.off('read', handleRead);
       socket.off('messageEdited', handleEdited);
@@ -608,9 +602,23 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     ? 'This account has been deleted'
     : 'This account has been deactivated';
 
+  // Live presence for the other party (App.js owns `presenceMap`). Falls back
+  // to the last-seen snapshot from GET /conversations. Both go null when the
+  // other person has last-seen turned off (server suppresses the events and
+  // nulls `with.last_seen`), so this shows neither "online" nor a timestamp.
+  const presenceEntry = !isGroup && otherUser?.id != null ? presenceMap?.get(otherUser.id) : null;
+  const isOnline = !!presenceEntry?.online;
+  const lastSeenAt = presenceEntry?.lastSeen || otherUser?.last_seen || null;
+
   const headerSubtitle = isGroup || accountUnavailable
     ? null
-    : (typing.state === 'typing' ? 'typing...' : isOnline ? 'Online' : otherUser?.last_seen ? `Last seen ${new Date(otherUser.last_seen).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : '');
+    : (typing.state === 'typing'
+      ? 'typing...'
+      : isOnline
+      ? 'online'
+      : lastSeenAt
+      ? `last seen ${new Date(lastSeenAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+      : '');
 
   const typingName = typing.name || (isGroup ? '' : otherUser?.name || '');
 
@@ -646,7 +654,11 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
           onPress={() => setProfileModalOpen(true)}
         >
           <Text style={styles.headerTitle}>{headerTitle}</Text>
-          {!!headerSubtitle && <Text style={styles.headerSubtitle}>{headerSubtitle}</Text>}
+          {!!headerSubtitle && (
+            <Text style={[styles.headerSubtitle, isOnline && styles.headerSubtitleOnline]}>
+              {headerSubtitle}
+            </Text>
+          )}
         </TouchableOpacity>
         {!isGroup && otherUser && onStartCall && !accountUnavailable && (
           <View style={{ flexDirection: 'row' }}>
@@ -971,6 +983,7 @@ const styles = StyleSheet.create({
   backArrow: { color: colors.textPrimary, fontSize: 22 },
   headerTitle: { color: colors.textPrimary, fontSize: 17, fontWeight: '600' },
   headerSubtitle: { color: colors.textSecondary, fontSize: 12, marginTop: 2 },
+  headerSubtitleOnline: { color: '#4CAF50' },
   headerIconBtn: { marginLeft: spacing.md, padding: 2 },
   headerIcon: { fontSize: 20 },
   notifSettingsOverlay: {

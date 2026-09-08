@@ -17,11 +17,10 @@ function previewText(lastMessage) {
   return lastMessage.content;
 }
 
-export default function ChatListScreen({ token, currentUser, onOpenChat, onLogout, onOpenProfile }) {
+export default function ChatListScreen({ token, currentUser, presenceMap, onOpenChat, onLogout, onOpenProfile }) {
   const [conversations, setConversations] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
   const [starting, setStarting] = useState(false);
-  const [onlineIds, setOnlineIds] = useState({});
   const [searchQuery, setSearchQuery] = useState('');
   const [composeOpen, setComposeOpen] = useState(false);
 
@@ -47,19 +46,15 @@ export default function ChatListScreen({ token, currentUser, onOpenChat, onLogou
     loadConversations();
     loadFavourites();
     const socket = connectSocket(token);
-    const handlePresence = ({ userId, online }) => {
-      setOnlineIds((prev) => ({ ...prev, [userId]: online }));
-    };
+    // Presence (online dots) is owned by App.js via `presenceMap` - see there.
     const refreshOnActivity = () => loadConversations();
 
-    socket.on('presence', handlePresence);
     socket.on('message', refreshOnActivity);
     socket.on('read', refreshOnActivity);
     socket.on('delivered', refreshOnActivity);
     socket.on('conversationActivity', refreshOnActivity);
 
     return () => {
-      socket.off('presence', handlePresence);
       socket.off('message', refreshOnActivity);
       socket.off('read', refreshOnActivity);
       socket.off('delivered', refreshOnActivity);
@@ -279,7 +274,7 @@ export default function ChatListScreen({ token, currentUser, onOpenChat, onLogou
         renderItem={({ item }) => {
           const isGroup = !!item.is_group;
           const title = isGroup ? item.name : item.with?.name;
-          const online = !isGroup && item.with && onlineIds[item.with.id];
+          const online = !isGroup && item.with?.id != null && !!presenceMap?.get(item.with.id)?.online;
           const hasUnread = item.unreadCount > 0;
 
           return (
@@ -434,8 +429,10 @@ const styles = StyleSheet.create({
   },
   avatarText: { color: colors.textOnAccent, fontSize: 20, fontWeight: '600' },
   onlineDot: {
-    position: 'absolute', bottom: 0, right: 0, width: 13, height: 13,
-    borderRadius: 7, backgroundColor: colors.online, borderWidth: 2, borderColor: colors.background
+    // 10px green circle, 2px white ring, bottom-right of the avatar. Nothing
+    // rendered at all when offline (no grey dot).
+    position: 'absolute', bottom: 0, right: 0, width: 10, height: 10,
+    borderRadius: 5, backgroundColor: '#4CAF50', borderWidth: 2, borderColor: '#FFFFFF'
   },
   rowTopLine: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   rowName: { ...typography.rowName, color: colors.textPrimary, flex: 1, marginRight: spacing.sm },

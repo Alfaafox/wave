@@ -47,6 +47,12 @@ export default function App() {
   const [incomingCall, setIncomingCall] = useState(null);
   const [outgoingCall, setOutgoingCall] = useState(null);
   const [banner, setBanner] = useState(null);
+  // Live presence for everyone who shares a conversation with us, keyed by
+  // userId -> { online: bool, lastSeen: ISO string | null }. Fed by the
+  // server's presence:online / presence:offline events (incl. a one-time
+  // snapshot of who's already online, sent on connect). Lives here because
+  // ChatScreen needs it correct on mount and the chat list unmounts often.
+  const [presenceMap, setPresenceMap] = useState(() => new Map());
 
   useEffect(() => {
     (async () => {
@@ -88,6 +94,7 @@ export default function App() {
   useEffect(() => {
     if (!token) {
       setSocket(null);
+      setPresenceMap(new Map());
       return;
     }
     const s = connectSocket(token);
@@ -105,11 +112,45 @@ export default function App() {
       setCurrentUser(freshUser);
       AsyncStorage.setItem('user', JSON.stringify(freshUser));
     };
+    const handlePresenceOnline = ({ userId }) => {
+      setPresenceMap((prev) => {
+        const next = new Map(prev);
+        next.set(userId, { online: true, lastSeen: prev.get(userId)?.lastSeen || null });
+        return next;
+      });
+    };
+    // Sent once on (re)connect: the authoritative set of co-members online
+    // right now. Rebuild from it so a reconnect can't leave someone stuck
+    // "online" after they left during our disconnect window.
+    const handlePresenceSync = ({ online }) => {
+      const onlineSet = new Set(Array.isArray(online) ? online : []);
+      setPresenceMap((prev) => {
+        const next = new Map();
+        onlineSet.forEach((id) => next.set(id, { online: true, lastSeen: prev.get(id)?.lastSeen || null }));
+        prev.forEach((v, id) => {
+          if (!onlineSet.has(id)) next.set(id, { online: false, lastSeen: v.lastSeen || null });
+        });
+        return next;
+      });
+    };
+    const handlePresenceOffline = ({ userId, lastSeen }) => {
+      setPresenceMap((prev) => {
+        const next = new Map(prev);
+        next.set(userId, { online: false, lastSeen: lastSeen || prev.get(userId)?.lastSeen || null });
+        return next;
+      });
+    };
     s.on('profileUpdated', handleProfileUpdatedFromSocket);
     s.on('call:incoming', handleIncomingCall);
+    s.on('presence:online', handlePresenceOnline);
+    s.on('presence:offline', handlePresenceOffline);
+    s.on('presence:sync', handlePresenceSync);
     return () => {
       s.off('call:incoming', handleIncomingCall);
       s.off('profileUpdated', handleProfileUpdatedFromSocket);
+      s.off('presence:online', handlePresenceOnline);
+      s.off('presence:offline', handlePresenceOffline);
+      s.off('presence:sync', handlePresenceSync);
     };
   }, [token]);
 
@@ -364,6 +405,7 @@ export default function App() {
             <ChatListScreen
               token={token}
               currentUser={currentUser}
+              presenceMap={presenceMap}
               onOpenChat={openChat}
               onLogout={handleLogout}
               onOpenProfile={() => setScreen('settings')}
@@ -383,6 +425,7 @@ export default function App() {
               otherUser={activeChat.otherUser}
               isGroup={activeChat.isGroup}
               groupName={activeChat.groupName}
+              presenceMap={presenceMap}
               onStartCall={startCall}
               onBack={() => setScreen('chatList')}
             />
