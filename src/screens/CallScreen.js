@@ -148,6 +148,15 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
       socket.off('call:rejected', handleRejected);
       socket.off('call:ended', handleEnded);
       clearInterval(durationTimerRef.current);
+      // Always release the peer connection, local media and the global
+      // call-audio session when this screen goes away - some dismissal paths
+      // (a declined outgoing call, and call glare where App.js drops the
+      // outgoing call the instant the crossing 'call:incoming' arrives) unmount
+      // us without having gone through hangUp()/handleEnded(). cleanup() is
+      // idempotent, so the paths that already call it are unaffected. Running
+      // it here also guarantees the losing glare screen has released
+      // ExpoCallAudio before the incoming call's accept claims it.
+      callManagerRef.current?.cleanup();
     };
   }, []);
 

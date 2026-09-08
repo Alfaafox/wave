@@ -94,6 +94,12 @@ export default function App() {
     setSocket(s);
     const handleIncomingCall = ({ callId, fromUserId, fromName, callType }) => {
       setIncomingCall({ mode: 'incoming', callId, fromUserId, fromName, callType });
+      // Call glare: if we're mid-outgoing-call to this exact person, their
+      // invite crossed ours and the server let it win. Drop our outgoing
+      // attempt now so the two full-screen CallScreens never render stacked -
+      // callManager's own glare branch (via the invite ack) also closes it,
+      // this just removes the brief window before that ack arrives.
+      setOutgoingCall((cur) => (cur && cur.targetUserId === fromUserId ? null : cur));
     };
     const handleProfileUpdatedFromSocket = (freshUser) => {
       setCurrentUser(freshUser);

@@ -151,6 +151,18 @@ export function createCallManager(socket, { onLocalStream, onRemoteStream, onCal
       socket.emit('call:invite', { targetUserId, callType }, async (response) => {
         if (!response?.ok) {
           cleanup();
+          // Call glare: we and the person we're calling invited each other at
+          // the same moment. The server picked a winner (whichever invite it
+          // processed first) and told us we lost - their call is already
+          // arriving as a normal 'call:incoming' that App.js turns into an
+          // incoming CallScreen. Tear this outgoing attempt down silently (no
+          // "Call failed" dialog) and resolve so CallScreen's .catch never
+          // fires. onCallEnded() closes this screen; the incoming one remains.
+          if (response?.glare) {
+            if (onCallEnded) onCallEnded();
+            resolve({ glare: true });
+            return;
+          }
           reject(new Error(response?.error || 'Call failed'));
           return;
         }

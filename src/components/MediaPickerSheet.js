@@ -43,6 +43,21 @@ const TABS = {
 const GRID_COLUMNS = 3;
 const SEARCH_DEBOUNCE_MS = 400;
 
+// GIPHY's API Terms of Service require a visible "Powered By GIPHY"
+// attribution wherever GIPHY content is shown. MediaGrid is rendered ONLY
+// for the GIF and Sticker tabs (the Emoji tab uses EmojiKeyboard), so
+// placing this inside MediaGrid - and outside the loading/error/results
+// switch - guarantees it is on screen the whole time either of those tabs
+// is active, in every state. Kept as plain text because there is no bundled
+// GIPHY logo asset and the task forbids new dependencies.
+function GiphyAttribution() {
+  return (
+    <View style={styles.giphyAttribution}>
+      <Text style={styles.giphyAttributionText}>Powered by GIPHY</Text>
+    </View>
+  );
+}
+
 function MediaGrid({ endpoint, token, serverUrl, onPick }) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState([]);
@@ -107,6 +122,7 @@ function MediaGrid({ endpoint, token, serverUrl, onPick }) {
         />
       </View>
 
+      <View style={styles.gridBody}>
       {loading && results.length === 0 ? (
         <View style={styles.centerFill}>
           <ActivityIndicator color={colors.accent} />
@@ -133,6 +149,9 @@ function MediaGrid({ endpoint, token, serverUrl, onPick }) {
           )}
         />
       )}
+      </View>
+
+      <GiphyAttribution />
     </View>
   );
 }
@@ -252,9 +271,28 @@ const styles = StyleSheet.create({
   },
   searchInput: { flex: 1, color: colors.textPrimary, fontSize: 14 },
 
+  gridBody: { flex: 1 },
+
   centerFill: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   errorText: { color: colors.textMuted, fontSize: 13 },
   emptyText: { textAlign: 'center', color: colors.textMuted, marginTop: 30 },
+
+  // "Powered by GIPHY" attribution bar - required by the GIPHY API terms
+  // whenever GIF/Sticker (GIPHY-sourced) content is on screen.
+  giphyAttribution: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.xs,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    backgroundColor: colors.background,
+  },
+  giphyAttributionText: {
+    fontSize: 11,
+    letterSpacing: 0.5,
+    fontWeight: '600',
+    color: colors.textSecondary,
+  },
 
   gridItem: {
     flex: 1 / GRID_COLUMNS,
