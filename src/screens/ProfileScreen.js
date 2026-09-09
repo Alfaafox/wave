@@ -1,16 +1,24 @@
 import React, { useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Image, Alert, ActivityIndicator } from 'react-native';
+import {
+  View, Text, TouchableOpacity, StyleSheet, Image, Alert, ActivityIndicator,
+  Modal, Share, Platform, ScrollView
+} from 'react-native';
 import { colors, spacing, radii, shadow } from '../theme';
 import { Ionicons } from '@expo/vector-icons';
 import ImageViewerModal from '../components/ImageViewerModal';
 
+const MONO = Platform.OS === 'ios' ? 'Courier New' : 'monospace';
+
 export default function ProfileScreen({ token, currentUser, onBack, onLogout, onChangeProfilePicture }) {
   const [uploading, setUploading] = useState(false);
   const [viewerOpen, setViewerOpen] = useState(false);
+  const [qrOpen, setQrOpen] = useState(false);
 
   // Displayed picture comes straight from currentUser: App.js owns the picker
   // + upload and pushes the new data URI down through that prop.
   const picture = currentUser?.profilePicture || null;
+  const phone = currentUser?.phoneNumber || null;
+  const initial = (currentUser?.name || '?').charAt(0).toUpperCase();
 
   // The actual expo-image-picker call lives at the App.js level, NOT here.
   // On Android (New Architecture) ImagePicker.launchImageLibraryAsync throws
@@ -36,6 +44,27 @@ export default function ProfileScreen({ token, currentUser, onBack, onLogout, on
     else changePicture();
   };
 
+  // Only ever shares the logged-in user's OWN details - never another user's.
+  const shareProfile = async () => {
+    try {
+      await Share.share({
+        title: 'Wave Chat',
+        message: 'Hey! Chat with me on Wave. My number: ' + (phone || ''),
+      });
+    } catch (e) {
+      // user dismissed the share sheet, or it is unavailable - nothing to do
+    }
+  };
+
+  const shareNumber = async () => {
+    if (!phone) return;
+    try {
+      await Share.share({ title: 'Wave Chat', message: phone });
+    } catch (e) {
+      /* dismissed / unavailable */
+    }
+  };
+
   return (
     <View style={styles.container}>
       <View style={styles.header}>
@@ -51,9 +80,7 @@ export default function ProfileScreen({ token, currentUser, onBack, onLogout, on
             <Image source={{ uri: picture }} style={styles.avatarImage} />
           ) : (
             <View style={styles.avatar}>
-              <Text style={styles.avatarText}>
-                {(currentUser?.name || '?').charAt(0).toUpperCase()}
-              </Text>
+              <Text style={styles.avatarText}>{initial}</Text>
             </View>
           )}
         </TouchableOpacity>
@@ -85,8 +112,22 @@ export default function ProfileScreen({ token, currentUser, onBack, onLogout, on
         <View style={styles.divider} />
         <View style={styles.field}>
           <Text style={styles.label}>Phone number</Text>
-          <Text style={styles.value}>{currentUser?.phoneNumber || 'Not set'}</Text>
+          <Text style={styles.value}>{phone || 'Not set'}</Text>
         </View>
+      </View>
+
+      <View style={[styles.card, styles.menuCard]}>
+        <TouchableOpacity style={styles.menuRow} onPress={shareProfile} activeOpacity={0.6}>
+          <Ionicons name="share-social-outline" size={20} color={colors.textSecondary} style={styles.menuIcon} />
+          <Text style={styles.menuLabel}>Share Profile</Text>
+          <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+        </TouchableOpacity>
+        <View style={styles.divider} />
+        <TouchableOpacity style={styles.menuRow} onPress={() => setQrOpen(true)} activeOpacity={0.6}>
+          <Ionicons name="qr-code-outline" size={20} color={colors.textSecondary} style={styles.menuIcon} />
+          <Text style={styles.menuLabel}>My QR Code</Text>
+          <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+        </TouchableOpacity>
       </View>
 
       <TouchableOpacity style={styles.logoutButton} onPress={onLogout} activeOpacity={0.8}>
@@ -98,6 +139,46 @@ export default function ProfileScreen({ token, currentUser, onBack, onLogout, on
         uri={picture}
         onClose={() => setViewerOpen(false)}
       />
+
+      <Modal visible={qrOpen} animationType="slide" onRequestClose={() => setQrOpen(false)}>
+        <ScrollView
+          style={styles.qrScreen}
+          contentContainerStyle={styles.qrContent}
+          showsVerticalScrollIndicator={false}
+        >
+          <TouchableOpacity style={styles.qrClose} onPress={() => setQrOpen(false)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+            <Ionicons name="close-outline" size={28} color={colors.textPrimary} />
+          </TouchableOpacity>
+
+          <Text style={styles.qrTitle}>My Wave Code</Text>
+
+          {picture ? (
+            <Image source={{ uri: picture }} style={styles.qrAvatar} />
+          ) : (
+            <View style={styles.qrAvatarFallback}>
+              <Text style={styles.qrAvatarInitial}>{initial}</Text>
+            </View>
+          )}
+          <Text style={styles.qrName}>{currentUser?.name || 'You'}</Text>
+
+          <View style={styles.qrFrame}>
+            <View style={[styles.qrCorner, styles.qrCornerTL]} />
+            <View style={[styles.qrCorner, styles.qrCornerTR]} />
+            <View style={[styles.qrCorner, styles.qrCornerBL]} />
+            <View style={[styles.qrCorner, styles.qrCornerBR]} />
+            <Text style={styles.qrNumber}>{phone || 'Not set'}</Text>
+          </View>
+
+          <Text style={styles.qrSubtitle}>
+            Share your code so others can find you on Wave
+          </Text>
+
+          <TouchableOpacity style={styles.qrShareBtn} onPress={shareNumber} activeOpacity={0.85}>
+            <Ionicons name="share-social-outline" size={18} color={colors.textOnAccent} style={{ marginRight: spacing.sm }} />
+            <Text style={styles.qrShareText}>Share</Text>
+          </TouchableOpacity>
+        </ScrollView>
+      </Modal>
     </View>
   );
 }
@@ -132,10 +213,53 @@ const styles = StyleSheet.create({
   label: { fontSize: 12, color: colors.textMuted, marginBottom: 4 },
   value: { fontSize: 16, color: colors.textPrimary },
 
+  menuCard: { marginTop: spacing.lg },
+  menuRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: spacing.md },
+  menuIcon: { marginRight: spacing.md },
+  menuLabel: { flex: 1, fontSize: 15, color: colors.textPrimary },
+
   logoutButton: {
     marginTop: spacing.xl, marginHorizontal: spacing.lg,
     backgroundColor: colors.background, borderWidth: 1, borderColor: colors.danger,
     borderRadius: radii.sm, padding: spacing.md, alignItems: 'center'
   },
-  logoutText: { color: colors.danger, fontSize: 16, fontWeight: '600' }
+  logoutText: { color: colors.danger, fontSize: 16, fontWeight: '600' },
+
+  // --- My QR Code modal ---
+  qrScreen: { flex: 1, backgroundColor: colors.background },
+  qrContent: { alignItems: 'center', paddingHorizontal: spacing.xl, paddingTop: 64, paddingBottom: spacing.xxl },
+  qrClose: { position: 'absolute', top: 48, right: 16, padding: 6, zIndex: 2 },
+  qrTitle: { fontSize: 20, fontWeight: '700', color: colors.textPrimary, marginBottom: spacing.xl },
+  qrAvatar: { width: 80, height: 80, borderRadius: 40 },
+  qrAvatarFallback: {
+    width: 80, height: 80, borderRadius: 40, backgroundColor: colors.accent,
+    alignItems: 'center', justifyContent: 'center'
+  },
+  qrAvatarInitial: { color: colors.textOnAccent, fontSize: 32, fontWeight: '700' },
+  qrName: { fontSize: 17, fontWeight: '600', color: colors.textPrimary, marginTop: spacing.md },
+
+  qrFrame: {
+    width: 240, height: 240, alignItems: 'center', justifyContent: 'center',
+    marginVertical: spacing.xl,
+  },
+  qrCorner: { position: 'absolute', width: 46, height: 46, borderColor: colors.accent },
+  qrCornerTL: { top: 0, left: 0, borderLeftWidth: 3, borderTopWidth: 3 },
+  qrCornerTR: { top: 0, right: 0, borderRightWidth: 3, borderTopWidth: 3 },
+  qrCornerBL: { bottom: 0, left: 0, borderLeftWidth: 3, borderBottomWidth: 3 },
+  qrCornerBR: { bottom: 0, right: 0, borderRightWidth: 3, borderBottomWidth: 3 },
+  qrNumber: {
+    fontFamily: MONO, fontSize: 22, fontWeight: '700', letterSpacing: 1,
+    color: colors.textPrimary, textAlign: 'center', paddingHorizontal: spacing.lg,
+  },
+
+  qrSubtitle: {
+    fontSize: 13, color: colors.textSecondary, textAlign: 'center',
+    marginBottom: spacing.xxl, paddingHorizontal: spacing.lg,
+  },
+  qrShareBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    backgroundColor: colors.accent, borderRadius: radii.pill,
+    paddingVertical: spacing.md, paddingHorizontal: spacing.xxl,
+  },
+  qrShareText: { color: colors.textOnAccent, fontSize: 15, fontWeight: '700' },
 });

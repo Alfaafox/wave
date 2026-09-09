@@ -114,6 +114,15 @@ export function getConversations(token) {
   });
 }
 
+// Bump every conversation the caller is a member of to its newest message,
+// clearing all unread badges at once. Server: PUT /conversations/mark-all-read.
+export function markAllConversationsRead(token) {
+  return request('/conversations/mark-all-read', {
+    method: 'PUT',
+    headers: { Authorization: `Bearer ${token}` }
+  });
+}
+
 export function getMessages(token, conversationId) {
   return request(`/conversations/${conversationId}/messages`, {
     method: 'GET',

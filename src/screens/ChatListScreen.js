@@ -3,7 +3,7 @@ import {
   View, Text, FlatList, TouchableOpacity, StyleSheet,
   TextInput, Modal, Alert, RefreshControl, Image, ScrollView
 } from 'react-native';
-import { getConversations, startConversation, createGroup, deleteConversation } from '../utils/api';
+import { getConversations, startConversation, createGroup, deleteConversation, markAllConversationsRead } from '../utils/api';
 import { connectSocket } from '../utils/socket';
 import { colors, spacing, radii, typography, shadow } from '../theme';
 import ContactPickerScreen from './ContactPickerScreen';
@@ -23,6 +23,7 @@ export default function ChatListScreen({ token, currentUser, presenceMap, onOpen
   const [starting, setStarting] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [composeOpen, setComposeOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   const [pickerMode, setPickerMode] = useState(null);
   const [groupNamingFor, setGroupNamingFor] = useState(null);
@@ -69,11 +70,24 @@ export default function ChatListScreen({ token, currentUser, presenceMap, onOpen
     setRefreshing(false);
   };
 
-  const handleOverflowMenu = () => {
-    Alert.alert('Menu', '', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Log out', style: 'destructive', onPress: onLogout }
-    ]);
+  // Header overflow menu. New Group and Settings reuse the exact handlers the
+  // rest of the screen already uses; Starred / Archived are stubs for the next
+  // task. Every item closes the menu.
+  const handleMarkAllRead = async () => {
+    setMenuOpen(false);
+    try {
+      await markAllConversationsRead(token);
+      // Server bumped every membership pointer to the newest message; mirror
+      // that locally so the unread badges clear without a round-trip.
+      setConversations((prev) => prev.map((c) => ({ ...c, unreadCount: 0 })));
+    } catch (err) {
+      Alert.alert('Could not mark all as read', err.message);
+    }
+  };
+
+  const menuAction = (fn) => () => {
+    setMenuOpen(false);
+    fn();
   };
 
   const openChatPicker = () => {
@@ -205,7 +219,7 @@ export default function ChatListScreen({ token, currentUser, presenceMap, onOpen
               </View>
             )}
           </TouchableOpacity>
-          <TouchableOpacity onPress={handleOverflowMenu} style={styles.headerIconBtn}>
+          <TouchableOpacity onPress={() => setMenuOpen(true)} style={styles.headerIconBtn}>
             <Ionicons name="ellipsis-vertical" size={20} color={colors.textSecondary} />
           </TouchableOpacity>
         </View>
@@ -329,6 +343,39 @@ export default function ChatListScreen({ token, currentUser, presenceMap, onOpen
         <Ionicons name="create-outline" size={24} color={colors.textOnAccent} />
       </TouchableOpacity>
 
+      <Modal visible={menuOpen} transparent animationType="fade" onRequestClose={() => setMenuOpen(false)}>
+        <TouchableOpacity style={styles.menuOverlay} activeOpacity={1} onPress={() => setMenuOpen(false)}>
+          <View style={styles.menuDropdown}>
+            <TouchableOpacity style={styles.menuItem} onPress={menuAction(openGroupPicker)}>
+              <Ionicons name="people-outline" size={18} color={colors.textPrimary} />
+              <Text style={styles.menuItemText}>New Group</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.menuItem} onPress={handleMarkAllRead}>
+              <Ionicons name="checkmark-done-outline" size={18} color={colors.textPrimary} />
+              <Text style={styles.menuItemText}>Mark All as Read</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={menuAction(() => Alert.alert('Coming soon - Starred Messages'))}
+            >
+              <Ionicons name="star-outline" size={18} color={colors.textPrimary} />
+              <Text style={styles.menuItemText}>Starred Messages</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={menuAction(() => Alert.alert('Coming soon - Archived Chats'))}
+            >
+              <Ionicons name="archive-outline" size={18} color={colors.textPrimary} />
+              <Text style={styles.menuItemText}>Archived</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.menuItem} onPress={menuAction(onOpenProfile)}>
+              <Ionicons name="settings-outline" size={18} color={colors.textPrimary} />
+              <Text style={styles.menuItemText}>Settings</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
       <Modal visible={composeOpen} transparent animationType="fade" onRequestClose={() => setComposeOpen(false)}>
         <TouchableOpacity style={styles.composeOverlay} activeOpacity={1} onPress={() => setComposeOpen(false)}>
           <View style={styles.composeSheet}>
@@ -451,6 +498,15 @@ const styles = StyleSheet.create({
     borderRadius: 28, backgroundColor: colors.accent, justifyContent: 'center',
     alignItems: 'center', ...shadow.md
   },
+
+  menuOverlay: { flex: 1, backgroundColor: 'transparent' },
+  menuDropdown: {
+    position: 'absolute', top: 88, right: spacing.lg,
+    minWidth: 216, backgroundColor: colors.background,
+    borderRadius: radii.md, paddingVertical: spacing.xs, ...shadow.md,
+  },
+  menuItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: spacing.lg },
+  menuItemText: { fontSize: 15, color: colors.textPrimary, marginLeft: spacing.md },
 
   composeOverlay: { flex: 1, backgroundColor: colors.overlay, justifyContent: 'flex-end' },
   composeSheet: {
