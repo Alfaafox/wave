@@ -329,7 +329,7 @@ export default function ChatListScreen({ token, currentUser, presenceMap, onOpen
             {searchQuery ? 'No chats match your search' : 'No chats yet. Tap + to start one.'}
           </Text>
         }
-        ListFooterComponent={
+        ListHeaderComponent={
           !searchQuery && archivedCount > 0 ? (
             <TouchableOpacity style={styles.archivedRow} activeOpacity={0.6} onPress={onOpenArchived}>
               <Ionicons name="archive-outline" size={18} color={colors.textMuted} style={styles.archivedIcon} />
@@ -476,11 +476,11 @@ const styles = StyleSheet.create({
 
   empty: { textAlign: 'center', marginTop: 60, color: colors.textMuted },
 
-  // "Archived" row pinned to the bottom of the main list (footer).
+  // "Archived" row pinned to the top of the main list (header).
   archivedRow: {
     flexDirection: 'row', alignItems: 'center',
     paddingVertical: spacing.md, paddingHorizontal: spacing.lg,
-    borderTopWidth: 1, borderTopColor: colors.divider,
+    borderBottomWidth: 1, borderBottomColor: colors.divider,
     backgroundColor: colors.surface,
   },
   archivedIcon: { marginRight: spacing.md },

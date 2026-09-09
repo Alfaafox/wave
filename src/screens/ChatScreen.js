@@ -1307,14 +1307,19 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
           // the time sits on that line if it fits, or wraps to its own line if
           // not. Image / voice / system messages keep the normal flow meta row.
           const inlineTimestamp = item.message_type === 'text' && !hasReactions;
-          // Same font size (10) as the real meta below; a little generous on
-          // the trailing pad so text always clears the timestamp. Sent bubbles
-          // reserve extra width for the tick icon.
-          const metaSpacer =
-            '  '
-            + (item.edited === 1 ? 'edited  ' : '')
-            + timeLabel
-            + (isMine ? '      ' : '  ');
+          // Invisible width reservation for the absolutely-positioned meta.
+          // It must NOT contain the real time text: a nested <Text>'s
+          // color:'transparent' can be overridden by the parent bubble text
+          // colour on the New Architecture, which would render the spacer as
+          // a visible second timestamp. So it is ONLY non-breaking spaces -
+          // enough of them, at fontSize 10, to approximate the meta width:
+          // ~8 chars for the time, +3 for the tick on sent bubbles, +8 more
+          // when an "edited" label is also shown.
+          const metaSpacer = item.edited === 1
+            ? '\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0'
+            : (isMine
+              ? '\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0'
+              : '\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0');
 
           const metaContent = (
             <>
