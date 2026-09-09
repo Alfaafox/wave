@@ -47,6 +47,52 @@ function pinSnippet(p) {
   return (p.content || '').replace(/\s+/g, ' ').trim() || 'Message';
 }
 
+// --- Date separators between messages ---------------------------------------
+// Local calendar-day key (year-month-day) used only for grouping.
+function dayKey(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+}
+
+// WhatsApp/Signal/Telegram-style separator label:
+//   today -> "Today", yesterday -> "Yesterday", last 7 days -> "Monday",
+//   older this year -> "Mon, 4 Aug", earlier year -> "Mon, 4 Aug 2025".
+function formatDateSeparator(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const now = new Date();
+  const startOfDay = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diffDays = Math.round((startOfDay(now) - startOfDay(d)) / 86400000);
+  if (diffDays === 0) return 'Today';
+  if (diffDays === 1) return 'Yesterday';
+  if (diffDays > 1 && diffDays < 7) return d.toLocaleDateString([], { weekday: 'long' });
+  const weekday = d.toLocaleDateString([], { weekday: 'short' });
+  const month = d.toLocaleDateString([], { month: 'short' });
+  const base = `${weekday}, ${d.getDate()} ${month}`;
+  return d.getFullYear() === now.getFullYear() ? base : `${base} ${d.getFullYear()}`;
+}
+
+// Pure: returns a new array with { type:'dateSeparator', date, id } objects
+// inserted wherever the calendar day changes between consecutive messages.
+// Keyed by the label ('sep_<label>') so it is stable across re-renders.
+function insertDateSeparators(messages) {
+  if (!Array.isArray(messages) || messages.length === 0) return messages || [];
+  const out = [];
+  let lastKey = null;
+  for (const m of messages) {
+    if (!m || !m.created_at) { out.push(m); continue; }
+    const key = dayKey(m.created_at);
+    if (key && key !== lastKey) {
+      const label = formatDateSeparator(m.created_at);
+      out.push({ type: 'dateSeparator', date: label, id: `sep_${label}` });
+      lastKey = key;
+    }
+    out.push(m);
+  }
+  return out;
+}
+
 // Wraps one message bubble with a right-swipe-to-reply gesture. Detection is a
 // memoised RN PanResponder (matching the project's existing PanResponder
 // convention - UserProfileModal / ImageViewerModal); the slide + the reply-icon
@@ -1026,7 +1072,9 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
   };
 
   const scrollToMessageId = (messageId) => {
-    const index = messages.findIndex((m) => m.id === messageId);
+    // Index into the rendered list (messages + date separators), not the raw
+    // messages array, so scrollToIndex lands on the right row.
+    const index = listData.findIndex((m) => m.type !== 'dateSeparator' && m.id === messageId);
     if (index < 0) {
       Alert.alert('Message not loaded', 'This message is older than the loaded history. Scroll up in the chat to load more, then search again.');
       return false;
@@ -1085,6 +1133,11 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
       .map((m) => m.content),
     [messages]
   );
+
+  // The FlatList data: messages with date-separator rows spliced in. `messages`
+  // state stays a pure message array (socket handlers, recentImages, etc.);
+  // separators live only in this derived list.
+  const listData = useMemo(() => insertDateSeparators(messages), [messages]);
 
   const highlightBg = highlightAnim.interpolate({
     inputRange: [0, 1],
@@ -1252,9 +1305,10 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
 
       <FlatList
         ref={listRef}
-        data={messages}
-        keyExtractor={(item) => String(item.id)}
+        data={listData}
+        keyExtractor={(item) => (item.type === 'dateSeparator' ? item.id : String(item.id))}
         extraData={highlightedMessageId}
+        initialNumToRender={20}
         contentContainerStyle={{ padding: spacing.md }}
         onContentSizeChange={() => {
           // Don't yank the list to the bottom while the user is reviewing a
@@ -1274,6 +1328,16 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
         }}
         ListFooterComponent={typingFooter}
         renderItem={({ item }) => {
+          if (item.type === 'dateSeparator') {
+            return (
+              <View style={styles.dateSepRow}>
+                <View style={styles.dateSepLine} />
+                <Text style={styles.dateSepText}>{item.date}</Text>
+                <View style={styles.dateSepLine} />
+              </View>
+            );
+          }
+
           if (item.message_type === 'system') {
             return (
               <View style={styles.systemRow}>
@@ -1299,28 +1363,10 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
           }
 
           const timeLabel = new Date(item.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-          const hasReactions = Array.isArray(item.reactions) && item.reactions.length > 0;
-          // WhatsApp-style inline timestamp: for a plain text message with no
-          // reaction pills below it, the time + ticks are absolutely pinned to
-          // the bubble's bottom-right corner and an invisible, timestamp-sized
-          // spacer is appended after the text so the last line reserves room -
-          // the time sits on that line if it fits, or wraps to its own line if
-          // not. Image / voice / system messages keep the normal flow meta row.
-          const inlineTimestamp = item.message_type === 'text' && !hasReactions;
-          // Invisible width reservation for the absolutely-positioned meta.
-          // It must NOT contain the real time text: a nested <Text>'s
-          // color:'transparent' can be overridden by the parent bubble text
-          // colour on the New Architecture, which would render the spacer as
-          // a visible second timestamp. So it is ONLY non-breaking spaces -
-          // enough of them, at fontSize 10, to approximate the meta width:
-          // ~8 chars for the time, +3 for the tick on sent bubbles, +8 more
-          // when an "edited" label is also shown.
-          const metaSpacer = item.edited === 1
-            ? '\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0'
-            : (isMine
-              ? '\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0'
-              : '\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0');
 
+          // Flow meta row for image / voice messages. Text messages render the
+          // time + ticks inline inside the message <Text> instead (Signal's
+          // technique - see the message_type === 'text' branch below).
           const metaContent = (
             <>
               {item.edited === 1 && (
@@ -1390,19 +1436,27 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
               {item.message_type === 'audio' && <AudioBubble uri={item.content} isMine={isMine} />}
               {item.message_type === 'text' && (
                 <Text style={[styles.bubbleText, { color: isMine ? colors.bubbleOutgoingText : colors.bubbleIncomingText }]}>
-                  {item.content}
-                  {inlineTimestamp && (
-                    <Text style={styles.inlineMetaSpacer}>{metaSpacer}</Text>
+                  {item.deleted_for_everyone ? '' : item.content}
+                  {'  '}
+                  <Text style={{ fontSize: 11, color: isMine ? 'rgba(255,255,255,0.7)' : colors.textMuted }}>
+                    {item.edited === 1 ? 'edited  ' : ''}{timeLabel}
+                  </Text>
+                  {isMine && (
+                    <Text
+                      style={{
+                        fontSize: 11,
+                        color: item.read ? '#8FD3FF' : 'rgba(255,255,255,0.7)',
+                      }}
+                    >
+                      {item.delivered || item.read ? '  \u2713\u2713' : '  \u2713'}
+                    </Text>
                   )}
                 </Text>
               )}
 
-              {inlineTimestamp && (
-                <View style={styles.inlineMeta} pointerEvents="none">
-                  {metaContent}
-                </View>
-              )}
-              {!inlineTimestamp && (
+              {/* Image / voice keep the flow meta row below the content. Text
+                  renders its time + ticks inline (above). */}
+              {(item.message_type === 'image' || item.message_type === 'audio') && (
                 <View style={styles.metaRow}>
                   {metaContent}
                 </View>
@@ -1930,14 +1984,17 @@ const styles = StyleSheet.create({
   replyPreviewTextMine: { color: 'rgba(255,255,255,0.85)' },
   replyPreviewTextTheirs: { color: colors.textSecondary },
   metaRow: { flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', marginTop: 4 },
-  // WhatsApp-style inline timestamp: pinned to the bubble's bottom-right corner
-  // for text messages, sitting over the invisible `inlineMetaSpacer` reserved
-  // at the end of the message text.
-  inlineMeta: { position: 'absolute', right: 8, bottom: 4, flexDirection: 'row', alignItems: 'center' },
-  inlineMetaSpacer: { fontSize: 10, color: 'transparent' },
   // Tiny gold star at the bubble's bottom-left, shown only when the current
   // user has starred this message.
   bubbleStarBadge: { position: 'absolute', left: 5, bottom: 3 },
+
+  // Date separator row between messages of different calendar days.
+  dateSepRow: { flexDirection: 'row', alignItems: 'center', marginVertical: spacing.md },
+  dateSepLine: { flex: 1, height: 1, backgroundColor: colors.divider },
+  dateSepText: {
+    fontSize: 12, color: colors.textMuted, fontWeight: '600',
+    marginHorizontal: spacing.md,
+  },
   editedLabel: { fontSize: 10, marginRight: 4, fontStyle: 'italic' },
   bubbleTime: { fontSize: 10, marginRight: 4 },
 
