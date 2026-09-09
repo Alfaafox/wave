@@ -440,8 +440,14 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     const handleMessage = (msg) => {
       if (msg.conversationId === conversationId) {
         setMessages((prev) => [...prev, msg]);
-        if (msg.user_id !== currentUser.id && (shownTyperId == null || shownTyperId === msg.user_id)) {
-          goGone();
+        if (msg.user_id !== currentUser.id) {
+          // We're reading this chat right now - tell the server so the
+          // conversation-list unread badge is already zero when we go back
+          // (joinConversation only marks read on mount).
+          socketRef.current?.emit('markRead', conversationId);
+          if (shownTyperId == null || shownTyperId === msg.user_id) {
+            goGone();
+          }
         }
 
         if (
@@ -559,6 +565,9 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
       // and drop any pending "pause" emit.
       clearTimeout(pauseEmitRef.current);
       socket.emit('typing:stop', { conversationId });
+      // Final catch-all read: covers a message that landed a beat before we
+      // navigated back, so the list badge is right by the time it renders.
+      socket.emit('markRead', conversationId);
     };
   }, [conversationId, token]);
 
