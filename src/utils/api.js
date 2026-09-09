@@ -198,6 +198,16 @@ export function getMessages(token, conversationId) {
   });
 }
 
+// View-once photo: the recipient calls this the moment they open it. The
+// server marks it viewed and blanks the stored content in one transaction,
+// then broadcasts `messageViewed` to the conversation room.
+export function markViewOnceViewed(token, conversationId, messageId) {
+  return request(`/conversations/${conversationId}/messages/${messageId}/view`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` }
+  });
+}
+
 export function deleteConversation(token, conversationId) {
   return request(`/conversations/${conversationId}`, {
     method: 'DELETE',

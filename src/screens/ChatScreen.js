@@ -18,6 +18,7 @@ import { connectSocket } from '../utils/socket';
 import { ReactionPicker, ReactionPills } from '../components/MessageReactions';
 import MediaPickerSheet from '../components/MediaPickerSheet';
 import ImageViewerModal from '../components/ImageViewerModal';
+import ViewOnceViewer from '../components/ViewOnceViewer';
 import UserProfileModal from '../components/UserProfileModal';
 import PinnedMessagesModal from '../components/PinnedMessagesModal';
 import ContactNotificationSettings from './ContactNotificationSettings';
@@ -29,6 +30,17 @@ import { WALLPAPER_STORAGE_KEY, AUTOSAVE_STORAGE_KEY, getWallpaperColor } from '
 import { getMuteCache, setMuteCache } from '../utils/contactPrefs';
 
 const EDIT_DELETE_WINDOW_MS = 15 * 60 * 1000;
+
+// View-once photo timer pills (1:1 only). value 0 = no timer (stays open until
+// closed); 1/3/5/10 = seconds before the viewer auto-closes. The first label
+// is the infinity sign written as a Unicode escape, never a raw glyph.
+const VIEW_ONCE_PILLS = [
+  { value: 0, label: '\u221E' },
+  { value: 1, label: '1' },
+  { value: 3, label: '3' },
+  { value: 5, label: '5' },
+  { value: 10, label: '10' },
+];
 
 // Swipe-to-reply tuning.
 const SWIPE_MAX = 80;        // translation is clamped here
@@ -231,6 +243,13 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
   const [showEmojiBar, setShowEmojiBar] = useState(false);
   const [viewerImage, setViewerImage] = useState(null);
   const [savingViewerImage, setSavingViewerImage] = useState(false);
+  // View-once photo compose flow (1:1 only). `stagedImage` is a picked photo
+  // held before send so the timer pills can be chosen; `viewOnceDuration` is
+  // null (off) or 0/1/3/5/10. `viewOnceViewing` is the message currently open
+  // in the full-screen ViewOnceViewer.
+  const [stagedImage, setStagedImage] = useState(null);
+  const [viewOnceDuration, setViewOnceDuration] = useState(null);
+  const [viewOnceViewing, setViewOnceViewing] = useState(null);
   const [wallpaperColor, setWallpaperColor] = useState(null);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
   const [notifSettingsOpen, setNotifSettingsOpen] = useState(false);
@@ -425,7 +444,11 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
           goGone();
         }
 
-        if (autoSaveRef.current && msg.message_type === 'image' && msg.user_id !== currentUser.id) {
+        if (
+          autoSaveRef.current && msg.message_type === 'image'
+          && msg.user_id !== currentUser.id
+          && msg.view_once_duration == null && msg.content
+        ) {
           MediaLibrary.saveToLibraryAsync(msg.content).catch((err) => {
             console.warn('Auto-save failed:', err.message);
           });
@@ -476,6 +499,12 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
       if (cid !== conversationId) return;
       setMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, reactions } : m)));
     };
+    const handleMessageViewed = ({ conversationId: cid, messageId }) => {
+      if (String(cid) !== String(conversationId)) return;
+      setMessages((prev) => prev.map((m) => (
+        m.id === messageId ? { ...m, view_once_viewed: 1, content: null } : m
+      )));
+    };
     const handlePrivateChatOn = ({ conversationId: cid }) => {
       if (String(cid) === String(conversationId)) setPrivateChatState(true);
     };
@@ -495,6 +524,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
 
     socket.on('message', handleMessage);
     socket.on('reactionUpdate', handleReactionUpdate);
+    socket.on('messageViewed', handleMessageViewed);
     socket.on('typing:start', handleTypingStart);
     socket.on('typing:pause', handleTypingPause);
     socket.on('typing:stop', handleTypingStop);
@@ -518,6 +548,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
       socket.off('messageEdited', handleEdited);
       socket.off('messageDeletedForEveryone', handleDeletedForEveryone);
       socket.off('reactionUpdate', handleReactionUpdate);
+      socket.off('messageViewed', handleMessageViewed);
       socket.off('privateChatEnabled', handlePrivateChatOn);
       socket.off('privateChatDisabled', handlePrivateChatOff);
       socket.off('pinnedMessage', handlePinned);
@@ -551,6 +582,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
 
     const payload = { conversationId, content, messageType };
     if (replyTo) payload.replyToId = replyTo.id;
+    if (viewOnceDuration !== null) payload.view_once_duration = viewOnceDuration;
 
     socketRef.current.emit('message', payload, (response) => {
       if (!response?.ok) {
@@ -561,6 +593,17 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     emitTypingStop();
     if (messageType === 'text') setInput('');
     setReplyTo(null);
+    // Staging + view-once are one-shot per send.
+    setStagedImage(null);
+    setViewOnceDuration(null);
+  };
+
+  const sendStagedImage = () => {
+    if (stagedImage) sendMessage(stagedImage, 'image');
+  };
+  const clearStagedImage = () => {
+    setStagedImage(null);
+    setViewOnceDuration(null);
   };
 
   const handleTypingInput = (text) => {
@@ -609,7 +652,32 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
       Alert.alert('Image too large', `About ${approxKb}KB. Try a smaller photo.`);
       return;
     }
-    sendMessage(dataUri, 'image');
+    // In a 1:1 chat, stage the photo so the view-once timer pills can be
+    // chosen before it sends. Groups (no view-once) send straight away.
+    if (isGroup) {
+      sendMessage(dataUri, 'image');
+    } else {
+      setEditingMessage(null);
+      setViewOnceDuration(null);
+      setStagedImage(dataUri);
+    }
+  };
+
+  // Open a view-once photo. If it arrived over the socket while the chat was
+  // open its content was withheld (the socket never carries view-once images);
+  // fetch it - GET messages gates it to the unopened recipient.
+  const openViewOnce = async (item) => {
+    if (item.content) { setViewOnceViewing(item); return; }
+    try {
+      const fresh = await getMessages(token, conversationId);
+      const found = (Array.isArray(fresh) ? fresh : []).find((m) => m.id === item.id);
+      if (found && found.content) {
+        setMessages((prev) => prev.map((m) => (m.id === item.id ? { ...m, content: found.content } : m)));
+        setViewOnceViewing({ ...item, content: found.content });
+        return;
+      }
+    } catch (e) { /* fall through */ }
+    Alert.alert('Photo unavailable', 'Could not load this photo. Try reopening the chat.');
   };
 
   const pickImage = async () => {
@@ -1434,6 +1502,33 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
             );
           }
 
+          // View-once photo: a card, never the image inline. Not swipeable, no
+          // long-press menu - it can only be viewed, and only once.
+          if (item.view_once_duration != null) {
+            const durLabel = item.view_once_duration === 0 ? 'View once' : `${item.view_once_duration}s`;
+            const viewed = item.view_once_viewed === 1;
+            if (isMine || viewed) {
+              return (
+                <View style={[styles.voCard, isMine ? styles.voCardMine : styles.voCardTheirs, styles.voCardSpent]}>
+                  <Ionicons name="eye-off-outline" size={16} color={colors.textSecondary} style={styles.voCardIcon} />
+                  <Text style={styles.voCardSpentText}>
+                    {viewed && !isMine ? 'Opened' : `Photo \u00B7 ${durLabel}`}
+                  </Text>
+                </View>
+              );
+            }
+            return (
+              <TouchableOpacity
+                style={[styles.voCard, styles.voCardTheirs, styles.voCardOpen]}
+                activeOpacity={0.8}
+                onPress={() => openViewOnce(item)}
+              >
+                <Ionicons name="eye-outline" size={16} color={colors.accent} style={styles.voCardIcon} />
+                <Text style={styles.voCardOpenText}>{`Photo \u00B7 ${durLabel}`}</Text>
+              </TouchableOpacity>
+            );
+          }
+
           const timeLabel = new Date(item.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
           // Flow meta row for image / voice messages. Text messages render the
@@ -1670,6 +1765,34 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
         </View>
       )}
 
+      {stagedImage && !accountUnavailable && (
+        <View style={styles.stagedBar}>
+          <Image source={{ uri: stagedImage }} style={styles.stagedThumb} />
+          {isGroup ? (
+            <Text style={styles.stagedHint}>Photo ready to send</Text>
+          ) : (
+            <View style={styles.voPillRow}>
+              <Ionicons name="eye-outline" size={15} color={colors.textMuted} style={{ marginRight: spacing.sm }} />
+              {VIEW_ONCE_PILLS.map((p) => {
+                const selected = viewOnceDuration === p.value;
+                return (
+                  <TouchableOpacity
+                    key={p.value}
+                    onPress={() => setViewOnceDuration(selected ? null : p.value)}
+                    style={[styles.voPill, selected && styles.voPillSelected]}
+                  >
+                    <Text style={[styles.voPillText, selected && styles.voPillTextSelected]}>{p.label}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          )}
+          <TouchableOpacity onPress={clearStagedImage} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+            <Ionicons name="close" size={18} color={colors.textMuted} />
+          </TouchableOpacity>
+        </View>
+      )}
+
       {!accountUnavailable && (
       <View style={styles.inputRow}>
         <TouchableOpacity
@@ -1705,6 +1828,17 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
           <TouchableOpacity style={styles.sendButton} onPress={submitEdit}>
             <Text style={styles.sendButtonText}>Save</Text>
           </TouchableOpacity>
+        ) : stagedImage ? (
+          <View>
+            <TouchableOpacity style={styles.sendButtonRound} onPress={sendStagedImage}>
+              <Ionicons name="send" size={18} color={colors.textOnAccent} />
+            </TouchableOpacity>
+            {viewOnceDuration !== null && (
+              <View style={styles.voSendBadge}>
+                <Ionicons name="eye-outline" size={10} color={colors.textOnAccent} />
+              </View>
+            )}
+          </View>
         ) : input.trim().length === 0 ? (
           <TouchableOpacity
             style={styles.micButton}
@@ -1860,6 +1994,24 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
           setSavingViewerImage(false);
         }}
       />
+
+      {viewOnceViewing && (
+        <ViewOnceViewer
+          key={viewOnceViewing.id}
+          token={token}
+          conversationId={conversationId}
+          messageId={viewOnceViewing.id}
+          uri={viewOnceViewing.content}
+          duration={viewOnceViewing.view_once_duration}
+          onViewed={() => {
+            const vid = viewOnceViewing.id;
+            setMessages((prev) => prev.map((m) => (
+              m.id === vid ? { ...m, view_once_viewed: 1, content: null } : m
+            )));
+          }}
+          onClose={() => setViewOnceViewing(null)}
+        />
+      )}
 
       <UserProfileModal
         visible={profileModalOpen}
@@ -2036,6 +2188,43 @@ const styles = StyleSheet.create({
   deletedText: { fontSize: 13, color: colors.textMuted, fontStyle: 'italic' },
   messageImage: { width: 200, height: 200, borderRadius: radii.sm },
   saveHint: { fontSize: 10, marginTop: 2, textAlign: 'center' },
+
+  // View-once photo card (replaces the inline image for view-once messages).
+  voCard: {
+    maxWidth: '78%', flexDirection: 'row', alignItems: 'center',
+    paddingVertical: spacing.md, paddingHorizontal: spacing.md,
+    borderRadius: radii.bubble, marginBottom: spacing.sm, borderWidth: 1,
+  },
+  voCardMine: { alignSelf: 'flex-end', borderBottomRightRadius: radii.bubbleTail },
+  voCardTheirs: { alignSelf: 'flex-start', borderBottomLeftRadius: radii.bubbleTail },
+  voCardOpen: { backgroundColor: colors.surface, borderColor: colors.accent },
+  voCardSpent: { backgroundColor: colors.surface, borderColor: colors.border },
+  voCardIcon: { marginRight: spacing.sm },
+  voCardOpenText: { fontSize: 14, color: colors.accent, fontWeight: '600' },
+  voCardSpentText: { fontSize: 14, color: colors.textSecondary },
+
+  // Staged-photo bar above the input row + its view-once timer pills.
+  stagedBar: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
+    backgroundColor: colors.surface, borderTopWidth: 1, borderTopColor: colors.border,
+  },
+  stagedThumb: { width: 36, height: 36, borderRadius: radii.sm, marginRight: spacing.md, backgroundColor: colors.border },
+  stagedHint: { flex: 1, fontSize: 13, color: colors.textMuted },
+  voPillRow: { flex: 1, flexDirection: 'row', alignItems: 'center' },
+  voPill: {
+    minWidth: 30, height: 26, borderRadius: 13, borderWidth: 1, borderColor: colors.border,
+    alignItems: 'center', justifyContent: 'center', marginRight: spacing.sm, paddingHorizontal: 6,
+  },
+  voPillSelected: { backgroundColor: colors.accent, borderColor: colors.accent },
+  voPillText: { fontSize: 13, color: colors.textSecondary, fontWeight: '600' },
+  voPillTextSelected: { color: colors.textOnAccent },
+  voSendBadge: {
+    position: 'absolute', top: -3, right: -3,
+    width: 16, height: 16, borderRadius: 8, backgroundColor: colors.textPrimary,
+    alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: colors.background,
+  },
   audioRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: spacing.xs, minWidth: 140 },
   audioIcon: { marginRight: spacing.sm },
   audioLabel: { fontSize: 14 },

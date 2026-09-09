@@ -12,6 +12,7 @@ export default {
     return ['earpiece', 'speaker'];
   },
   setAudioRoute(_route: AudioRoute) {},
+  setSecureScreen(_enabled: boolean) {},
   addListener(
     _eventName: 'onAudioRouteChanged',
     _listener: (event: { route: AudioRoute }) => void

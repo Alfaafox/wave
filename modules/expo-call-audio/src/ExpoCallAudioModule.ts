@@ -11,6 +11,10 @@ type ExpoCallAudioModuleType = {
   getAudioRoute(): AudioRoute;
   getAvailableRoutes(): AudioRoute[];
   setAudioRoute(route: AudioRoute): void;
+  // Block screenshots / screen recording for the whole app window while
+  // enabled (used by the view-once photo viewer). Android: Activity
+  // FLAG_SECURE. iOS: secure UITextField layer trick. Web: no-op.
+  setSecureScreen(enabled: boolean): void;
   addListener(
     eventName: 'onAudioRouteChanged',
     listener: (event: AudioRouteChangedEvent) => void

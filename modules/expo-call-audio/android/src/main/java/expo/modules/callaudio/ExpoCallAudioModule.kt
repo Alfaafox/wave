@@ -7,6 +7,7 @@ import android.media.AudioManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.view.WindowManager
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 
@@ -32,6 +33,26 @@ class ExpoCallAudioModule : Module() {
     Name("ExpoCallAudio")
 
     Events(EVENT_ROUTE_CHANGED)
+
+    // Screenshot / screen-recording blocking for the whole Activity window.
+    // Used by the view-once photo viewer (ViewOnceViewer.js) - unrelated to
+    // calls, but this is the only local native module. FLAG_SECURE also blanks
+    // the app in the recent-apps switcher while set. No-op if there is no
+    // current Activity.
+    Function("setSecureScreen") { enabled: Boolean ->
+      val activity = appContext.activityProvider?.currentActivity ?: return@Function Unit
+      activity.runOnUiThread {
+        if (enabled) {
+          activity.window.setFlags(
+            WindowManager.LayoutParams.FLAG_SECURE,
+            WindowManager.LayoutParams.FLAG_SECURE
+          )
+        } else {
+          activity.window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        }
+      }
+      Unit
+    }
 
     // Call this when a call starts (right when local media is acquired).
     // Priority order matches WhatsApp / Signal: a connected Bluetooth SCO / LE
