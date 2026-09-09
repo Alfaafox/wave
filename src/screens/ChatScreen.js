@@ -12,7 +12,7 @@ import {
   AudioModule, RecordingPresets, setAudioModeAsync,
   useAudioRecorder, useAudioRecorderState, useAudioPlayer, useAudioPlayerStatus
 } from 'expo-audio';
-import { getMessages, getConversations, setConversationMute, SERVER_URL } from '../utils/api';
+import { getMessages, getConversations, setConversationMute, setPrivateChat, SERVER_URL } from '../utils/api';
 import { connectSocket } from '../utils/socket';
 import { ReactionPicker, ReactionPills } from '../components/MessageReactions';
 import MediaPickerSheet from '../components/MediaPickerSheet';
@@ -70,6 +70,10 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
   const [profileModalOpen, setProfileModalOpen] = useState(false);
   const [notifSettingsOpen, setNotifSettingsOpen] = useState(false);
   const [contactMuted, setContactMuted] = useState(false);
+  // Private Chat mode for this conversation (server-backed, on conversations
+  // .private_chat). Seeded from GET /conversations on mount, kept live by the
+  // privateChatEnabled / privateChatDisabled socket events. 1:1 only.
+  const [privateChat, setPrivateChatState] = useState(false);
   const autoSaveRef = useRef(false);
   const listRef = useRef(null);
   const socketRef = useRef(null);
@@ -160,6 +164,16 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
       if (isMounted) setMessages(data);
     });
 
+    // Seed Private Chat state (1:1 only). GET /conversations is the same call
+    // UserProfileModal makes; the privateChat* socket events keep it live.
+    if (!isGroup) {
+      getConversations(token).then((list) => {
+        if (!isMounted) return;
+        const conv = (Array.isArray(list) ? list : []).find((c) => String(c.id) === String(conversationId));
+        if (conv) setPrivateChatState(!!conv.private_chat);
+      }).catch(() => {});
+    }
+
     const socket = connectSocket(token);
     socketRef.current = socket;
     socket.emit('joinConversation', conversationId, (response) => {
@@ -241,6 +255,12 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
       if (cid !== conversationId) return;
       setMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, reactions } : m)));
     };
+    const handlePrivateChatOn = ({ conversationId: cid }) => {
+      if (String(cid) === String(conversationId)) setPrivateChatState(true);
+    };
+    const handlePrivateChatOff = ({ conversationId: cid }) => {
+      if (String(cid) === String(conversationId)) setPrivateChatState(false);
+    };
 
     socket.on('message', handleMessage);
     socket.on('reactionUpdate', handleReactionUpdate);
@@ -251,6 +271,8 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     socket.on('read', handleRead);
     socket.on('messageEdited', handleEdited);
     socket.on('messageDeletedForEveryone', handleDeletedForEveryone);
+    socket.on('privateChatEnabled', handlePrivateChatOn);
+    socket.on('privateChatDisabled', handlePrivateChatOff);
 
     return () => {
       isMounted = false;
@@ -263,6 +285,8 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
       socket.off('messageEdited', handleEdited);
       socket.off('messageDeletedForEveryone', handleDeletedForEveryone);
       socket.off('reactionUpdate', handleReactionUpdate);
+      socket.off('privateChatEnabled', handlePrivateChatOn);
+      socket.off('privateChatDisabled', handlePrivateChatOff);
       clearTimeout(typingTimeoutRef.current);
       // Leaving the chat (unmount) - tell the other side we're done typing,
       // and drop any pending "pause" emit.
@@ -642,6 +666,8 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
 
   const typingName = typing.name || (isGroup ? '' : otherUser?.name || '');
 
+  const handlePrivateChatChange = (enabled) => setPrivateChatState(!!enabled);
+
   // Most recent image messages (newest first, max 3) for the profile modal's
   // "Media, Links & Docs" preview row.
   const recentImages = useMemo(
@@ -684,7 +710,12 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
           disabled={isGroup ? false : !otherUser?.id}
           onPress={() => setProfileModalOpen(true)}
         >
-          <Text style={styles.headerTitle}>{headerTitle}</Text>
+          <View style={styles.headerTitleRow}>
+            {privateChat && (
+              <Ionicons name="lock-closed" size={13} color={colors.textSecondary} style={styles.headerLock} />
+            )}
+            <Text style={styles.headerTitle} numberOfLines={1}>{headerTitle}</Text>
+          </View>
           {!!headerSubtitle && (
             <Text style={[styles.headerSubtitle, isOnline && styles.headerSubtitleOnline]}>
               {headerSubtitle}
@@ -711,6 +742,17 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
         onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: true })}
         ListFooterComponent={typingFooter}
         renderItem={({ item }) => {
+          if (item.message_type === 'system') {
+            return (
+              <View style={styles.systemRow}>
+                <View style={styles.systemPill}>
+                  <Ionicons name="lock-closed" size={12} color={colors.textSecondary} style={{ marginRight: 5 }} />
+                  <Text style={styles.systemText}>{item.content}</Text>
+                </View>
+              </View>
+            );
+          }
+
           const isMine = item.user_id === currentUser.id;
 
           if (item.deleted_for_everyone) {
@@ -984,6 +1026,8 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
         onStartCall={onStartCall}
         onlineUsers={presenceMap}
         recentImages={recentImages}
+        privateChat={privateChat}
+        onPrivateChatChange={handlePrivateChatChange}
         muted={contactMuted}
         onMuteChange={handleMuteChange}
         onOpenNotifications={() => { setProfileModalOpen(false); setNotifSettingsOpen(true); }}
@@ -1014,7 +1058,9 @@ const styles = StyleSheet.create({
   },
   backBtn: { marginRight: spacing.md, padding: 2 },
   backArrow: { color: colors.textPrimary, fontSize: 22 },
-  headerTitle: { color: colors.textPrimary, fontSize: 17, fontWeight: '600' },
+  headerTitleRow: { flexDirection: 'row', alignItems: 'center' },
+  headerLock: { marginRight: 4 },
+  headerTitle: { color: colors.textPrimary, fontSize: 17, fontWeight: '600', flexShrink: 1 },
   headerSubtitle: { color: colors.textSecondary, fontSize: 12, marginTop: 2 },
   headerSubtitleOnline: { color: '#4CAF50' },
   headerIconBtn: { marginLeft: spacing.md, padding: 2 },
@@ -1023,6 +1069,14 @@ const styles = StyleSheet.create({
     position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
     backgroundColor: colors.background, zIndex: 100, elevation: 100,
   },
+
+  systemRow: { alignItems: 'center', marginVertical: spacing.sm },
+  systemPill: {
+    flexDirection: 'row', alignItems: 'center', maxWidth: '88%',
+    backgroundColor: colors.surface, borderRadius: radii.pill,
+    paddingHorizontal: spacing.md, paddingVertical: 6,
+  },
+  systemText: { fontSize: 12, color: colors.textSecondary, textAlign: 'center' },
 
   bubble: { maxWidth: '78%', borderRadius: radii.bubble, padding: spacing.md, marginBottom: spacing.sm },
   bubbleMine: {

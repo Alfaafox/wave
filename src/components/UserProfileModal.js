@@ -1,8 +1,9 @@
 // src/components/UserProfileModal.js
 //
 // Bottom-sheet modal opened by tapping the chat header in ChatScreen.
-//   - 1:1  : photo / name / phone / last seen, call buttons, favourite star,
-//            mute toggle, a row into ContactNotificationSettings, block/unblock.
+//   - 1:1  : photo / name / phone / last seen / online, call buttons, favourite
+//            star, a media preview row, mute toggle, a row into
+//            ContactNotificationSettings, a Private Chat toggle, block/unblock.
 //   - group: group name + member count, scrollable member list, leave group.
 //
 // The sheet slides up (Modal animationType="slide") and can also be dragged
@@ -18,6 +19,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing, radii, typography } from '../theme';
 import {
   getConversations, getConversationMute, getPrivacySettings, blockUser, unblockUser, deleteConversation,
+  setPrivateChat,
 } from '../utils/api';
 import { isFavourite, toggleFavourite } from '../utils/favourites';
 import FavouriteStar from './FavouriteStar';
@@ -68,6 +70,11 @@ export default function UserProfileModal({
   // Up to 3 URIs of the most recent image-type messages (newest first),
   // derived from ChatScreen's messages state.
   recentImages,
+  // Private Chat mode for this conversation (server-backed). `onPrivateChatChange`
+  // lets ChatScreen update its header lock / state the instant we toggle,
+  // ahead of the privateChatEnabled/Disabled socket event.
+  privateChat,
+  onPrivateChatChange,
 }) {
   const translateY = useRef(new Animated.Value(0)).current;
   // onClose is captured in a ref so the PanResponder (built once) always calls
@@ -81,6 +88,7 @@ export default function UserProfileModal({
   const [members, setMembers] = useState([]);
   const [membersLoading, setMembersLoading] = useState(false);
   const [photoViewerOpen, setPhotoViewerOpen] = useState(false);
+  const [privateBusy, setPrivateBusy] = useState(false);
 
   const otherId = otherUser?.id ?? null;
   const avatarUri = isGroup ? null : otherUser?.profilePicture || null;
@@ -181,6 +189,47 @@ export default function UserProfileModal({
           },
         },
       ]
+    );
+  };
+
+  const applyPrivateChat = async (enable) => {
+    if (privateBusy || otherId == null) return;
+    setPrivateBusy(true);
+    // Optimistic: ChatScreen flips its header lock now; the socket event
+    // confirms. Roll back on failure.
+    onPrivateChatChange?.(enable);
+    try {
+      const r = await setPrivateChat(token, conversationId, enable);
+      if (typeof r?.private_chat === 'number') onPrivateChatChange?.(r.private_chat === 1);
+    } catch (err) {
+      onPrivateChatChange?.(!enable);
+      Alert.alert('Could not update Private Chat', err.message);
+    } finally {
+      setPrivateBusy(false);
+    }
+  };
+
+  const openPrivateChatDialog = () => {
+    if (privateBusy) return;
+    const on = !!privateChat;
+    Alert.alert(
+      'Private Chat',
+      'Private Chat adds these protections to this conversation:\n\n'
+        + '- Messages disappear after 7 days\n'
+        + '- Read receipts are turned off\n'
+        + '- Notifications hide message content\n\n'
+        + (on
+          ? 'It is currently ON. Both of you will see a note in the chat if you turn it off.'
+          : 'Both of you will see a note in the chat when it is turned on.'),
+      on
+        ? [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Disable Private Chat', style: 'destructive', onPress: () => applyPrivateChat(false) },
+          ]
+        : [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Enable Private Chat', onPress: () => applyPrivateChat(true) },
+          ]
     );
   };
 
@@ -331,10 +380,12 @@ export default function UserProfileModal({
                     <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
                   </TouchableOpacity>
 
-                  <TouchableOpacity style={[styles.row, styles.disabledRow]} onPress={showComingSoon}>
-                    <Ionicons name="timer-outline" size={20} color={colors.textSecondary} style={styles.rowIcon} />
-                    <Text style={styles.rowLabel}>Disappearing Messages</Text>
-                    <Text style={styles.rowValue}>Off</Text>
+                  <TouchableOpacity style={styles.row} onPress={openPrivateChatDialog} disabled={privateBusy}>
+                    <Ionicons name="lock-closed-outline" size={20} color={colors.textSecondary} style={styles.rowIcon} />
+                    <Text style={styles.rowLabel}>Private Chat</Text>
+                    <Text style={[styles.rowValue, privateChat && styles.rowValueOn]}>
+                      {privateBusy ? '...' : privateChat ? 'On' : 'Off'}
+                    </Text>
                     <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
                   </TouchableOpacity>
 
@@ -406,7 +457,7 @@ const styles = StyleSheet.create({
   rowIcon: { marginRight: spacing.md },
   rowLabel: { flex: 1, fontSize: 15, color: colors.textPrimary },
   rowValue: { fontSize: 14, color: colors.textSecondary, marginRight: spacing.xs },
-  disabledRow: { opacity: 0.4 },
+  rowValueOn: { color: '#4CAF50', fontWeight: '600' },
   mediaThumbs: { flexDirection: 'row', gap: spacing.xs },
   mediaThumb: { width: 60, height: 60, borderRadius: 4, backgroundColor: colors.surface },
 

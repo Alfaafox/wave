@@ -142,6 +142,16 @@ export function setConversationMute(token, conversationId, muted) {
   });
 }
 
+// Private Chat mode: a per-conversation privacy preset (7-day message expiry,
+// read receipts off, generic push body). 1:1 conversations only. Response:
+// { private_chat: 0|1, private_chat_since: string|null }.
+export function setPrivateChat(token, conversationId, enable) {
+  return request(`/conversations/${conversationId}/private-chat/${enable ? 'enable' : 'disable'}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` }
+  });
+}
+
 export function updateProfilePicture(token, base64Image) {
   return request('/users/me/picture', {
     method: 'PUT',
