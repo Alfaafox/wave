@@ -642,6 +642,17 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
 
   const typingName = typing.name || (isGroup ? '' : otherUser?.name || '');
 
+  // Most recent image messages (newest first, max 3) for the profile modal's
+  // "Media, Links & Docs" preview row.
+  const recentImages = useMemo(
+    () => messages
+      .filter((m) => m.message_type === 'image' && !m.deleted_for_everyone && m.content)
+      .slice(-3)
+      .reverse()
+      .map((m) => m.content),
+    [messages]
+  );
+
   // Stable element so FlatList re-renders (not remounts) the indicator on
   // unrelated ChatScreen updates - otherwise the dot animation restarts on
   // every keystroke.
@@ -971,6 +982,8 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
         conversationId={conversationId}
         otherUser={otherUser}
         onStartCall={onStartCall}
+        onlineUsers={presenceMap}
+        recentImages={recentImages}
         muted={contactMuted}
         onMuteChange={handleMuteChange}
         onOpenNotifications={() => { setProfileModalOpen(false); setNotifSettingsOpen(true); }}

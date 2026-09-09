@@ -62,6 +62,12 @@ export default function UserProfileModal({
   onMuteChange,
   onOpenNotifications,
   onLeaveGroup,
+  // Presence map owned by App.js (userId -> { online, lastSeen }), threaded
+  // through ChatScreen. Named `presenceMap` upstream; passed here as `onlineUsers`.
+  onlineUsers,
+  // Up to 3 URIs of the most recent image-type messages (newest first),
+  // derived from ChatScreen's messages state.
+  recentImages,
 }) {
   const translateY = useRef(new Animated.Value(0)).current;
   // onClose is captured in a ref so the PanResponder (built once) always calls
@@ -204,7 +210,11 @@ export default function UserProfileModal({
   if (!visible) return null;
 
   const seen = lastSeenLabel(otherUser);
+  const online = !isGroup && otherId != null && !!onlineUsers?.get?.(otherId)?.online;
+  const images = Array.isArray(recentImages) ? recentImages.filter(Boolean).slice(0, 3) : [];
   const memberCount = members.length + 1; // server excludes the current user
+
+  const showComingSoon = () => Alert.alert('Coming soon');
 
   return (
     <>
@@ -271,6 +281,7 @@ export default function UserProfileModal({
                     <Text style={styles.name}>{otherUser?.name || 'Unknown'}</Text>
                     {!!otherUser?.phone_number && <Text style={styles.sub}>{otherUser.phone_number}</Text>}
                     {!!seen && <Text style={styles.sub}>{seen}</Text>}
+                    {online && <Text style={styles.onlineText}>Online</Text>}
                   </View>
 
                   <View style={styles.actionRow}>
@@ -290,6 +301,20 @@ export default function UserProfileModal({
 
                   <View style={styles.divider} />
 
+                  <TouchableOpacity style={styles.row} onPress={showComingSoon}>
+                    <Ionicons name="images-outline" size={20} color={colors.textSecondary} style={styles.rowIcon} />
+                    <Text style={styles.rowLabel}>Media, Links &amp; Docs</Text>
+                    {images.length > 0 ? (
+                      <View style={styles.mediaThumbs}>
+                        {images.map((uri, i) => (
+                          <Image key={String(i)} source={{ uri }} style={styles.mediaThumb} />
+                        ))}
+                      </View>
+                    ) : (
+                      <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
+                    )}
+                  </TouchableOpacity>
+
                   <View style={styles.row}>
                     <Ionicons name="notifications-off-outline" size={20} color={colors.textSecondary} style={styles.rowIcon} />
                     <Text style={styles.rowLabel}>Mute notifications</Text>
@@ -303,6 +328,13 @@ export default function UserProfileModal({
                   <TouchableOpacity style={styles.row} onPress={onOpenNotifications}>
                     <Ionicons name="notifications-outline" size={20} color={colors.textSecondary} style={styles.rowIcon} />
                     <Text style={styles.rowLabel}>Notifications</Text>
+                    <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
+                  </TouchableOpacity>
+
+                  <TouchableOpacity style={[styles.row, styles.disabledRow]} onPress={showComingSoon}>
+                    <Ionicons name="timer-outline" size={20} color={colors.textSecondary} style={styles.rowIcon} />
+                    <Text style={styles.rowLabel}>Disappearing Messages</Text>
+                    <Text style={styles.rowValue}>Off</Text>
                     <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
                   </TouchableOpacity>
 
@@ -354,6 +386,7 @@ const styles = StyleSheet.create({
   avatarFallbackText: { color: colors.textOnAccent, fontWeight: '700' },
   name: { ...typography.headerTitle, color: colors.textPrimary, marginTop: spacing.md, textAlign: 'center' },
   sub: { fontSize: 13, color: colors.textSecondary, marginTop: 2, textAlign: 'center' },
+  onlineText: { fontSize: 13, color: '#4CAF50', fontWeight: '600', marginTop: 2, textAlign: 'center' },
 
   actionRow: { flexDirection: 'row', justifyContent: 'center', gap: spacing.xxl, paddingVertical: spacing.md },
   actionBtn: { alignItems: 'center' },
@@ -372,6 +405,10 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', paddingVertical: spacing.md },
   rowIcon: { marginRight: spacing.md },
   rowLabel: { flex: 1, fontSize: 15, color: colors.textPrimary },
+  rowValue: { fontSize: 14, color: colors.textSecondary, marginRight: spacing.xs },
+  disabledRow: { opacity: 0.4 },
+  mediaThumbs: { flexDirection: 'row', gap: spacing.xs },
+  mediaThumb: { width: 60, height: 60, borderRadius: 4, backgroundColor: colors.surface },
 
   memberRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: spacing.sm },
   memberName: { fontSize: 15, color: colors.textPrimary },
