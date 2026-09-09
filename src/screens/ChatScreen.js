@@ -12,7 +12,7 @@ import {
   AudioModule, RecordingPresets, setAudioModeAsync,
   useAudioRecorder, useAudioRecorderState, useAudioPlayer, useAudioPlayerStatus
 } from 'expo-audio';
-import { getMessages, getConversations, setConversationMute, setPrivateChat, SERVER_URL } from '../utils/api';
+import { getMessages, getConversations, setConversationMute, setPrivateChat, searchMessages, SERVER_URL } from '../utils/api';
 import { connectSocket } from '../utils/socket';
 import { ReactionPicker, ReactionPills } from '../components/MessageReactions';
 import MediaPickerSheet from '../components/MediaPickerSheet';
@@ -27,6 +27,25 @@ import { getMuteCache, setMuteCache } from '../utils/contactPrefs';
 
 const EDIT_DELETE_WINDOW_MS = 15 * 60 * 1000;
 
+
+// Render a search-result message preview with the matched term bolded. Only
+// the first occurrence is highlighted; a leading "..." marks a trimmed start.
+function renderSnippet(text, query) {
+  const clean = (text || '').replace(/\s+/g, ' ').trim();
+  const q = (query || '').trim();
+  if (!q) return <Text style={styles.srSnippet} numberOfLines={2}>{clean}</Text>;
+  const idx = clean.toLowerCase().indexOf(q.toLowerCase());
+  if (idx === -1) return <Text style={styles.srSnippet} numberOfLines={2}>{clean}</Text>;
+  const from = Math.max(0, idx - 24);
+  const pre = (from > 0 ? '...' : '') + clean.slice(from, idx);
+  const mid = clean.slice(idx, idx + q.length);
+  const post = clean.slice(idx + q.length);
+  return (
+    <Text style={styles.srSnippet} numberOfLines={2}>
+      {pre}<Text style={styles.srSnippetMatch}>{mid}</Text>{post}
+    </Text>
+  );
+}
 
 function AudioBubble({ uri, isMine }) {
   const player = useAudioPlayer(uri);
@@ -74,9 +93,28 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
   // .private_chat). Seeded from GET /conversations on mount, kept live by the
   // privateChatEnabled / privateChatDisabled socket events. 1:1 only.
   const [privateChat, setPrivateChatState] = useState(false);
+  // In-conversation message search (FTS5-backed, GET /conversations/:id/search).
+  // `searchMode` transforms the header; results show in an absolute overlay.
+  // `resultsCollapsed` = a result was tapped/stepped-to, overlay hidden but
+  // still in search mode (a slim nav bar stays under the header).
+  const [searchMode, setSearchMode] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState([]);
+  const [searchTotal, setSearchTotal] = useState(0);
+  const [searchHasMore, setSearchHasMore] = useState(false);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState(null);
+  const [resultsCollapsed, setResultsCollapsed] = useState(false);
+  const [activeResultIndex, setActiveResultIndex] = useState(-1);
+  const [highlightedMessageId, setHighlightedMessageId] = useState(null);
+  const [headerHeight, setHeaderHeight] = useState(0);
   const autoSaveRef = useRef(false);
   const listRef = useRef(null);
   const socketRef = useRef(null);
+  const searchDebounceRef = useRef(null);
+  const searchReqIdRef = useRef(0);
+  // Flash highlight on the message a search result points at (fades over 1.5s).
+  const highlightAnim = useRef(new Animated.Value(0)).current;
   // Receiver-side safety timer (auto typing->pause after 4s, pause->gone after 30s).
   const typingTimeoutRef = useRef(null);
   // Sender-side: timestamp of the last typing:start emit (throttle to 1/sec)
@@ -288,6 +326,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
       socket.off('privateChatEnabled', handlePrivateChatOn);
       socket.off('privateChatDisabled', handlePrivateChatOff);
       clearTimeout(typingTimeoutRef.current);
+      clearTimeout(searchDebounceRef.current);
       // Leaving the chat (unmount) - tell the other side we're done typing,
       // and drop any pending "pause" emit.
       clearTimeout(pauseEmitRef.current);
@@ -309,6 +348,9 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
       Alert.alert('Not connected', 'Reconnecting... try again in a second.');
       return;
     }
+
+    // Sending from within search mode drops you back to the normal chat.
+    if (searchMode) exitSearchMode();
 
     const payload = { conversationId, content, messageType };
     if (replyTo) payload.replyToId = replyTo.id;
@@ -673,6 +715,115 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
 
   const handlePrivateChatChange = (enabled) => setPrivateChatState(!!enabled);
 
+  // --- Message search ---------------------------------------------------
+  const runSearch = async (q, offset) => {
+    const reqId = ++searchReqIdRef.current;
+    try {
+      const data = await searchMessages(token, conversationId, q, { limit: 20, offset });
+      if (reqId !== searchReqIdRef.current) return; // a newer search superseded this
+      setSearchError(null);
+      setSearchResults((prev) => (offset === 0 ? data.results || [] : [...prev, ...(data.results || [])]));
+      setSearchTotal(data.total || 0);
+      setSearchHasMore(!!data.hasMore);
+      if (offset === 0) setActiveResultIndex(-1);
+    } catch (err) {
+      if (reqId !== searchReqIdRef.current) return;
+      setSearchResults([]);
+      setSearchTotal(0);
+      setSearchHasMore(false);
+      setSearchError(err.message === 'Query too short' ? null : (err.message || 'Search failed'));
+    } finally {
+      if (reqId === searchReqIdRef.current) setSearchLoading(false);
+    }
+  };
+
+  const handleSearchInput = (text) => {
+    setSearchQuery(text);
+    setResultsCollapsed(false);
+    clearTimeout(searchDebounceRef.current);
+    const q = text.trim();
+    if (q.length < 2) {
+      searchReqIdRef.current++; // invalidate any in-flight response
+      setSearchResults([]);
+      setSearchTotal(0);
+      setSearchHasMore(false);
+      setSearchError(null);
+      setSearchLoading(false);
+      setActiveResultIndex(-1);
+      return;
+    }
+    setSearchLoading(true);
+    searchDebounceRef.current = setTimeout(() => runSearch(q, 0), 300);
+  };
+
+  const loadMoreSearch = () => {
+    if (searchLoading || !searchHasMore) return;
+    runSearch(searchQuery.trim(), searchResults.length);
+  };
+
+  const enterSearchMode = () => {
+    setSearchMode(true);
+    setResultsCollapsed(false);
+  };
+
+  const exitSearchMode = () => {
+    clearTimeout(searchDebounceRef.current);
+    searchReqIdRef.current++;
+    setSearchMode(false);
+    setSearchQuery('');
+    setSearchResults([]);
+    setSearchTotal(0);
+    setSearchHasMore(false);
+    setSearchLoading(false);
+    setSearchError(null);
+    setResultsCollapsed(false);
+    setActiveResultIndex(-1);
+    Keyboard.dismiss();
+  };
+
+  const flashHighlight = (messageId) => {
+    setHighlightedMessageId(messageId);
+    highlightAnim.setValue(1);
+    Animated.timing(highlightAnim, { toValue: 0, duration: 1500, useNativeDriver: false })
+      .start(({ finished }) => { if (finished) setHighlightedMessageId(null); });
+  };
+
+  const scrollToMessageId = (messageId) => {
+    const index = messages.findIndex((m) => m.id === messageId);
+    if (index < 0) {
+      Alert.alert('Message not loaded', 'This message is older than the loaded history. Scroll up in the chat to load more, then search again.');
+      return false;
+    }
+    try {
+      listRef.current?.scrollToIndex({ index, viewPosition: 0.5, animated: true });
+    } catch (e) {
+      listRef.current?.scrollToOffset({ offset: Math.max(0, index * 72), animated: true });
+    }
+    return true;
+  };
+
+  const openResult = (index) => {
+    if (index < 0 || index >= searchResults.length) return;
+    const msg = searchResults[index];
+    setActiveResultIndex(index);
+    setResultsCollapsed(true);
+    Keyboard.dismiss();
+    requestAnimationFrame(() => {
+      if (scrollToMessageId(msg.id)) flashHighlight(msg.id);
+    });
+  };
+
+  const stepResult = (dir) => {
+    if (!searchResults.length) return;
+    let next = activeResultIndex < 0 ? (dir > 0 ? 0 : searchResults.length - 1) : activeResultIndex + dir;
+    if (next < 0) next = 0;
+    if (next > searchResults.length - 1) {
+      next = searchResults.length - 1;
+      if (searchHasMore) loadMoreSearch();
+    }
+    openResult(next);
+  };
+
   // Most recent image messages (newest first, max 3) for the profile modal's
   // "Media, Links & Docs" preview row.
   const recentImages = useMemo(
@@ -683,6 +834,11 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
       .map((m) => m.content),
     [messages]
   );
+
+  const highlightBg = highlightAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['rgba(255,193,7,0)', 'rgba(255,193,7,0.45)'],
+  });
 
   // Stable element so FlatList re-renders (not remounts) the indicator on
   // unrelated ChatScreen updates - otherwise the dot animation restarts on
@@ -705,60 +861,129 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
     >
-      <View style={styles.header}>
-        <TouchableOpacity onPress={onBack} style={styles.backBtn}>
-          <Ionicons name="arrow-back" size={24} color={colors.textPrimary} />
-        </TouchableOpacity>
-        <TouchableOpacity
-          onPress={() => setProfileModalOpen(true)}
-          disabled={isGroup ? false : !otherUser?.id}
-          activeOpacity={0.6}
-          style={styles.headerAvatarBtn}
-        >
-          {headerAvatarUri ? (
-            <Image source={{ uri: headerAvatarUri }} style={styles.headerAvatarImg} />
-          ) : (
-            <View style={styles.headerAvatarFallback}>
-              <Text style={styles.headerAvatarInitial}>{headerInitial}</Text>
+      <View
+        style={styles.header}
+        onLayout={(e) => setHeaderHeight(e.nativeEvent.layout.height)}
+      >
+        {searchMode ? (
+          <>
+            <TouchableOpacity onPress={exitSearchMode} style={styles.backBtn}>
+              <Ionicons name="arrow-back" size={24} color={colors.textPrimary} />
+            </TouchableOpacity>
+            <TextInput
+              style={styles.searchHeaderInput}
+              placeholder="Search messages..."
+              placeholderTextColor={colors.textMuted}
+              value={searchQuery}
+              onChangeText={handleSearchInput}
+              autoFocus
+              autoCapitalize="none"
+              autoCorrect={false}
+              returnKeyType="search"
+            />
+            <TouchableOpacity onPress={exitSearchMode} style={styles.searchCancelBtn}>
+              <Text style={styles.searchCancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </>
+        ) : (
+          <>
+            <TouchableOpacity onPress={onBack} style={styles.backBtn}>
+              <Ionicons name="arrow-back" size={24} color={colors.textPrimary} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => setProfileModalOpen(true)}
+              disabled={isGroup ? false : !otherUser?.id}
+              activeOpacity={0.6}
+              style={styles.headerAvatarBtn}
+            >
+              {headerAvatarUri ? (
+                <Image source={{ uri: headerAvatarUri }} style={styles.headerAvatarImg} />
+              ) : (
+                <View style={styles.headerAvatarFallback}>
+                  <Text style={styles.headerAvatarInitial}>{headerInitial}</Text>
+                </View>
+              )}
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={{ flex: 1 }}
+              activeOpacity={0.6}
+              disabled={isGroup ? false : !otherUser?.id}
+              onPress={() => setProfileModalOpen(true)}
+            >
+              <View style={styles.headerTitleRow}>
+                {privateChat && (
+                  <Ionicons name="lock-closed" size={13} color={colors.textSecondary} style={styles.headerLock} />
+                )}
+                <Text style={styles.headerTitle} numberOfLines={1}>{headerTitle}</Text>
+              </View>
+              {!!headerSubtitle && (
+                <Text style={[styles.headerSubtitle, isOnline && styles.headerSubtitleOnline]}>
+                  {headerSubtitle}
+                </Text>
+              )}
+            </TouchableOpacity>
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+              <TouchableOpacity onPress={enterSearchMode} style={styles.headerIconBtn}>
+                <Ionicons name="search" size={20} color={colors.accent} />
+              </TouchableOpacity>
+              {!isGroup && otherUser && onStartCall && !accountUnavailable && (
+                <>
+                  <TouchableOpacity onPress={() => onStartCall(otherUser.id, otherUser.name, 'audio')} style={styles.headerIconBtn}>
+                    <Ionicons name="call-outline" size={22} color={colors.accent} />
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => onStartCall(otherUser.id, otherUser.name, 'video')} style={styles.headerIconBtn}>
+                    <Ionicons name="videocam-outline" size={24} color={colors.accent} />
+                  </TouchableOpacity>
+                </>
+              )}
             </View>
-          )}
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={{ flex: 1 }}
-          activeOpacity={0.6}
-          disabled={isGroup ? false : !otherUser?.id}
-          onPress={() => setProfileModalOpen(true)}
-        >
-          <View style={styles.headerTitleRow}>
-            {privateChat && (
-              <Ionicons name="lock-closed" size={13} color={colors.textSecondary} style={styles.headerLock} />
-            )}
-            <Text style={styles.headerTitle} numberOfLines={1}>{headerTitle}</Text>
-          </View>
-          {!!headerSubtitle && (
-            <Text style={[styles.headerSubtitle, isOnline && styles.headerSubtitleOnline]}>
-              {headerSubtitle}
-            </Text>
-          )}
-        </TouchableOpacity>
-        {!isGroup && otherUser && onStartCall && !accountUnavailable && (
-          <View style={{ flexDirection: 'row' }}>
-            <TouchableOpacity onPress={() => onStartCall(otherUser.id, otherUser.name, 'audio')} style={styles.headerIconBtn}>
-              <Ionicons name="call-outline" size={22} color={colors.accent} />
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => onStartCall(otherUser.id, otherUser.name, 'video')} style={styles.headerIconBtn}>
-              <Ionicons name="videocam-outline" size={24} color={colors.accent} />
-            </TouchableOpacity>
-          </View>
+          </>
         )}
       </View>
+
+      {searchMode && resultsCollapsed && searchResults.length > 0 && (
+        <View style={styles.searchNavBar}>
+          <Text style={styles.searchNavText}>
+            {activeResultIndex >= 0
+              ? `${activeResultIndex + 1} of ${searchTotal}`
+              : `${searchTotal} result${searchTotal === 1 ? '' : 's'}`}
+          </Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+            <TouchableOpacity onPress={() => stepResult(-1)} style={styles.searchNavBtn}>
+              <Ionicons name="chevron-up" size={20} color={colors.textPrimary} />
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => stepResult(1)} style={styles.searchNavBtn}>
+              <Ionicons name="chevron-down" size={20} color={colors.textPrimary} />
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => setResultsCollapsed(false)} style={styles.searchNavBtn}>
+              <Ionicons name="list" size={20} color={colors.accent} />
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
 
       <FlatList
         ref={listRef}
         data={messages}
         keyExtractor={(item) => String(item.id)}
+        extraData={highlightedMessageId}
         contentContainerStyle={{ padding: spacing.md }}
-        onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: true })}
+        onContentSizeChange={() => {
+          // Don't yank the list to the bottom while the user is reviewing a
+          // search hit further up.
+          if (!highlightedMessageId) listRef.current?.scrollToEnd({ animated: true });
+        }}
+        onScrollToIndexFailed={(info) => {
+          listRef.current?.scrollToOffset({
+            offset: Math.max(0, (info.averageItemLength || 72) * info.index),
+            animated: true,
+          });
+          setTimeout(() => {
+            try {
+              listRef.current?.scrollToIndex({ index: info.index, viewPosition: 0.5, animated: true });
+            } catch (e) { /* give up quietly */ }
+          }, 350);
+        }}
         ListFooterComponent={typingFooter}
         renderItem={({ item }) => {
           if (item.message_type === 'system') {
@@ -785,7 +1010,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
             );
           }
 
-          return (
+          const bubble = (
             <TouchableOpacity
               activeOpacity={0.85}
               onLongPress={() => openActionMenu(item)}
@@ -841,8 +1066,82 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
               />
             </TouchableOpacity>
           );
+
+          if (item.id === highlightedMessageId) {
+            return (
+              <Animated.View style={[styles.highlightWrap, { backgroundColor: highlightBg }]}>
+                {bubble}
+              </Animated.View>
+            );
+          }
+          return bubble;
         }}
       />
+
+      {searchMode && !resultsCollapsed && searchQuery.trim().length > 0 && (
+        <View style={[styles.searchOverlay, { top: headerHeight || 96 }]}>
+          {searchQuery.trim().length < 2 ? (
+            <Text style={styles.searchStatus}>Keep typing to search</Text>
+          ) : searchLoading && searchResults.length === 0 ? (
+            <ActivityIndicator color={colors.accent} style={{ marginTop: spacing.xl }} />
+          ) : searchError ? (
+            <Text style={styles.searchStatus}>{searchError}</Text>
+          ) : searchResults.length === 0 ? (
+            <Text style={styles.searchStatus}>No messages found</Text>
+          ) : (
+            <>
+              <View style={styles.searchResultsTop}>
+                <Text style={styles.searchCountText}>
+                  {searchTotal} result{searchTotal === 1 ? '' : 's'}
+                </Text>
+                <View style={{ flexDirection: 'row' }}>
+                  <TouchableOpacity onPress={() => stepResult(-1)} style={styles.searchNavBtn}>
+                    <Ionicons name="chevron-up" size={20} color={colors.textPrimary} />
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => stepResult(1)} style={styles.searchNavBtn}>
+                    <Ionicons name="chevron-down" size={20} color={colors.textPrimary} />
+                  </TouchableOpacity>
+                </View>
+              </View>
+              <FlatList
+                data={searchResults}
+                keyExtractor={(item) => `sr-${item.id}`}
+                keyboardShouldPersistTaps="handled"
+                keyboardDismissMode="on-drag"
+                onEndReached={loadMoreSearch}
+                onEndReachedThreshold={0.5}
+                ListFooterComponent={
+                  searchLoading && searchResults.length > 0
+                    ? <ActivityIndicator color={colors.accent} style={{ marginVertical: spacing.md }} />
+                    : null
+                }
+                renderItem={({ item, index }) => (
+                  <TouchableOpacity style={styles.srRow} activeOpacity={0.6} onPress={() => openResult(index)}>
+                    {item.profile_picture ? (
+                      <Image source={{ uri: item.profile_picture }} style={styles.srAvatar} />
+                    ) : (
+                      <View style={styles.srAvatarFallback}>
+                        <Text style={styles.srAvatarInitial}>
+                          {(item.sender_name || '?').trim().charAt(0).toUpperCase()}
+                        </Text>
+                      </View>
+                    )}
+                    <View style={{ flex: 1, marginLeft: spacing.md }}>
+                      <View style={styles.srTopLine}>
+                        <Text style={styles.srName} numberOfLines={1}>{item.sender_name || 'Unknown'}</Text>
+                        <Text style={styles.srDate}>
+                          {new Date(item.created_at).toLocaleDateString([], { month: 'short', day: 'numeric' })}
+                        </Text>
+                      </View>
+                      {renderSnippet(item.content, searchQuery)}
+                    </View>
+                  </TouchableOpacity>
+                )}
+              />
+            </>
+          )}
+        </View>
+      )}
 
       {replyTo && !accountUnavailable && (
         <View style={styles.replyBar}>
@@ -1085,6 +1384,53 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
   },
   headerAvatarInitial: { color: colors.textOnAccent, fontSize: 16, fontWeight: '700' },
+
+  searchHeaderInput: {
+    flex: 1, marginHorizontal: spacing.sm, fontSize: 16, color: colors.textPrimary,
+    paddingVertical: 4,
+  },
+  searchCancelBtn: { paddingHorizontal: spacing.sm, paddingVertical: 4 },
+  searchCancelText: { color: colors.accent, fontSize: 15, fontWeight: '600' },
+
+  searchNavBar: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: spacing.lg, paddingVertical: spacing.sm,
+    backgroundColor: colors.surface,
+    borderBottomWidth: 1, borderBottomColor: colors.border,
+    zIndex: 15, elevation: 15,
+  },
+  searchNavText: { fontSize: 13, color: colors.textSecondary, fontWeight: '600' },
+  searchNavBtn: { padding: 6, marginLeft: 2 },
+
+  searchOverlay: {
+    position: 'absolute', left: 0, right: 0, bottom: 0,
+    backgroundColor: colors.background, zIndex: 30, elevation: 30,
+  },
+  searchStatus: { textAlign: 'center', color: colors.textMuted, marginTop: spacing.xl, fontSize: 14 },
+  searchResultsTop: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: spacing.lg, paddingVertical: spacing.sm,
+    borderBottomWidth: 1, borderBottomColor: colors.divider,
+  },
+  searchCountText: { fontSize: 13, color: colors.textSecondary, fontWeight: '700' },
+  srRow: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: spacing.lg, paddingVertical: spacing.md,
+    borderBottomWidth: 1, borderBottomColor: colors.divider,
+  },
+  srAvatar: { width: 36, height: 36, borderRadius: 18 },
+  srAvatarFallback: {
+    width: 36, height: 36, borderRadius: 18, backgroundColor: colors.accent,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  srAvatarInitial: { color: colors.textOnAccent, fontSize: 15, fontWeight: '700' },
+  srTopLine: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  srName: { fontSize: 14, fontWeight: '600', color: colors.textPrimary, flex: 1, marginRight: spacing.sm },
+  srDate: { fontSize: 11, color: colors.textMuted },
+  srSnippet: { fontSize: 13, color: colors.textSecondary, marginTop: 2 },
+  srSnippetMatch: { fontWeight: '700', color: colors.textPrimary },
+
+  highlightWrap: { borderRadius: radii.md },
   headerTitleRow: { flexDirection: 'row', alignItems: 'center' },
   headerLock: { marginRight: 4 },
   headerTitle: { color: colors.textPrimary, fontSize: 17, fontWeight: '600', flexShrink: 1 },

@@ -128,6 +128,16 @@ export function deleteConversation(token, conversationId) {
   });
 }
 
+// In-conversation full-text search (FTS5-backed). Returns
+// { results: [{ id, content, created_at, sender_id, sender_name, profile_picture }], total, hasMore }.
+export function searchMessages(token, conversationId, q, { limit = 20, offset = 0 } = {}) {
+  const params = new URLSearchParams({ q, limit: String(limit), offset: String(offset) });
+  return request(`/conversations/${conversationId}/search?${params.toString()}`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` }
+  });
+}
+
 // Per-user, per-conversation push-notification mute (server-backed).
 export function getConversationMute(token, conversationId) {
   return request(`/conversations/${conversationId}/mute`, {
