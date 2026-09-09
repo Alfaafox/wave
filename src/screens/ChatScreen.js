@@ -48,25 +48,47 @@ function pinSnippet(p) {
 }
 
 // --- Date separators between messages ---------------------------------------
-// Local calendar-day key (year-month-day) used only for grouping.
-function dayKey(iso) {
-  const d = new Date(iso);
+// SQLite returns UTC timestamps as "YYYY-MM-DD HH:MM:SS" - no 'T', no 'Z'.
+// new Date() on that string is unreliable (Hermes can mis-parse a non-ISO
+// string, which made weeks-old messages resolve to ~now and show as "Today"),
+// so normalise to strict ISO-8601 UTC first - same trick the edit/delete
+// window uses elsewhere in this file.
+function parseTs(raw) {
+  const s = String(raw || '').replace(' ', 'T');
+  const hasTz = s.includes('Z') || /[+-]\d{2}:\d{2}$/.test(s);
+  return new Date(hasTz ? s : `${s}Z`);
+}
+
+// Date-only key in the LOCAL timezone (time component stripped before compare).
+function toDateKey(date) {
+  const d = date instanceof Date ? date : parseTs(date);
   if (Number.isNaN(d.getTime())) return null;
   return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
 }
 
+// Calendar-day key used only for grouping consecutive messages.
+function dayKey(raw) {
+  return toDateKey(raw);
+}
+
 // WhatsApp/Signal/Telegram-style separator label:
-//   today -> "Today", yesterday -> "Yesterday", last 7 days -> "Monday",
+//   today -> "Today", yesterday -> "Yesterday", last 6 days -> "Monday",
 //   older this year -> "Mon, 4 Aug", earlier year -> "Mon, 4 Aug 2025".
-function formatDateSeparator(iso) {
-  const d = new Date(iso);
+function formatDateSeparator(raw) {
+  const d = parseTs(raw);
   if (Number.isNaN(d.getTime())) return '';
+
+  const key = toDateKey(d);
+  if (key === toDateKey(new Date())) return 'Today';
+  if (key === toDateKey(new Date(Date.now() - 86400000))) return 'Yesterday';
+
+  // 2..6 days back -> weekday name. startOfDay() makes this a date-only
+  // comparison and stays correct across DST.
   const now = new Date();
   const startOfDay = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
   const diffDays = Math.round((startOfDay(now) - startOfDay(d)) / 86400000);
-  if (diffDays === 0) return 'Today';
-  if (diffDays === 1) return 'Yesterday';
-  if (diffDays > 1 && diffDays < 7) return d.toLocaleDateString([], { weekday: 'long' });
+  if (diffDays >= 2 && diffDays <= 6) return d.toLocaleDateString([], { weekday: 'long' });
+
   const weekday = d.toLocaleDateString([], { weekday: 'short' });
   const month = d.toLocaleDateString([], { month: 'short' });
   const base = `${weekday}, ${d.getDate()} ${month}`;
