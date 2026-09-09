@@ -1109,21 +1109,29 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
               {isGroup && !isMine && <Text style={styles.senderName}>{item.username}</Text>}
 
               {item.reply_to_id && (
-                <View style={styles.replyPreview}>
-                  <Text style={styles.replyPreviewName}>{item.reply_username}</Text>
+                <View style={[styles.replyPreview, isMine ? styles.replyPreviewMine : styles.replyPreviewTheirs]}>
+                  <Text style={[styles.replyPreviewName, isMine ? styles.replyPreviewNameMine : styles.replyPreviewNameTheirs]}>
+                    {item.reply_username}
+                  </Text>
                   <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                     {item.reply_deleted ? (
                       <>
-                        <Ionicons name="ban-outline" size={12} color={colors.textMuted} style={{ marginRight: 4 }} />
-                        <Text style={[styles.replyPreviewText, { fontStyle: 'italic' }]} numberOfLines={1}>
+                        <Ionicons name="ban-outline" size={12} color={isMine ? 'rgba(255,255,255,0.85)' : colors.textMuted} style={{ marginRight: 4 }} />
+                        <Text
+                          style={[styles.replyPreviewText, isMine ? styles.replyPreviewTextMine : styles.replyPreviewTextTheirs, { fontStyle: 'italic' }]}
+                          numberOfLines={1}
+                        >
                           This message was deleted
                         </Text>
                       </>
                     ) : (
                       <>
-                        {item.reply_type === 'image' && <Ionicons name="camera-outline" size={12} color={colors.textSecondary} style={{ marginRight: 4 }} />}
-                        {item.reply_type === 'audio' && <Ionicons name="mic-outline" size={12} color={colors.textSecondary} style={{ marginRight: 4 }} />}
-                        <Text style={styles.replyPreviewText} numberOfLines={1}>
+                        {item.reply_type === 'image' && <Ionicons name="camera-outline" size={12} color={isMine ? 'rgba(255,255,255,0.85)' : colors.textSecondary} style={{ marginRight: 4 }} />}
+                        {item.reply_type === 'audio' && <Ionicons name="mic-outline" size={12} color={isMine ? 'rgba(255,255,255,0.85)' : colors.textSecondary} style={{ marginRight: 4 }} />}
+                        <Text
+                          style={[styles.replyPreviewText, isMine ? styles.replyPreviewTextMine : styles.replyPreviewTextTheirs]}
+                          numberOfLines={1}
+                        >
                           {item.reply_type === 'image' ? 'Photo' : item.reply_type === 'audio' ? 'Voice message' : item.reply_content}
                         </Text>
                       </>
@@ -1619,12 +1627,22 @@ const styles = StyleSheet.create({
   audioRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: spacing.xs, minWidth: 140 },
   audioIcon: { marginRight: spacing.sm },
   audioLabel: { fontSize: 14 },
+  // Reply quote rendered inside a message bubble. The colours switch on the
+  // bubble type so quoted text is never grey/light on the blue outgoing
+  // bubble: `*Mine` = on the accent (blue) sent bubble, `*Theirs` = on the
+  // grey/white received bubble.
   replyPreview: {
-    borderLeftWidth: 3, borderLeftColor: colors.accent, backgroundColor: 'rgba(44,107,237,0.08)',
+    borderLeftWidth: 3,
     paddingLeft: spacing.sm, paddingVertical: 4, marginBottom: spacing.sm, borderRadius: 4
   },
-  replyPreviewName: { fontSize: 12, fontWeight: '700', color: colors.accent },
-  replyPreviewText: { fontSize: 12, color: colors.textSecondary },
+  replyPreviewMine: { borderLeftColor: '#FFFFFF', backgroundColor: 'rgba(0,0,0,0.15)' },
+  replyPreviewTheirs: { borderLeftColor: colors.accent, backgroundColor: 'rgba(0,0,0,0.06)' },
+  replyPreviewName: { fontSize: 12, fontWeight: '700' },
+  replyPreviewNameMine: { color: '#FFFFFF' },
+  replyPreviewNameTheirs: { color: colors.accent },
+  replyPreviewText: { fontSize: 12 },
+  replyPreviewTextMine: { color: 'rgba(255,255,255,0.85)' },
+  replyPreviewTextTheirs: { color: colors.textSecondary },
   metaRow: { flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', marginTop: 4 },
   editedLabel: { fontSize: 10, marginRight: 4, fontStyle: 'italic' },
   bubbleTime: { fontSize: 10, marginRight: 4 },
