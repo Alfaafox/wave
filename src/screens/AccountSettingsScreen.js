@@ -5,11 +5,17 @@ import SettingsSubScreenLayout from '../components/SettingsSubScreenLayout';
 import EditFieldScreen from '../components/EditFieldScreen';
 import { isValidEmail } from '../components/AuthUI';
 import {
-  updateProfile, changePassword, deactivateAccount, deleteAccount,
+  updateProfile, updateUsername, checkUsername, changePassword, deactivateAccount, deleteAccount,
   changeEmailInit, changeEmailVerifyIdentity, changeEmailSendNewOtp, changeEmailVerifyNew,
   changePhoneInit, changePhoneVerifyIdentity, changePhoneSendNewOtp, changePhoneVerifyNew,
 } from '../utils/api';
 import { colors, spacing, radii, shadow } from '../theme';
+
+// Optional handle. Must match the server's rule exactly (routes/users.js):
+// lowercase, starts with a letter, 3-20 chars, letters / digits / underscore.
+const USERNAME_RE = /^[a-z][a-z0-9_]{2,19}$/;
+const USERNAME_HINT =
+  'Usernames are 3-20 characters, start with a letter, and use only lowercase letters, numbers and underscores.';
 
 // Dedicated change-password screen. Kept local to this file since it's
 // only ever reached from the Account list below - if it ever needs reuse
@@ -416,11 +422,18 @@ function DeleteAccountScreen({ token, onDone, onBack }) {
 export default function AccountSettingsScreen({ token, currentUser, onBack, onUserUpdated, onLogout }) {
   // Local sub-navigation, contained entirely within this section - App.js
   // doesn't know or care about any of these sub-screens.
-  const [subScreen, setSubScreen] = useState(null); // null | 'name' | 'email' | 'phone' | 'password' | 'deactivate' | 'delete'
+  const [subScreen, setSubScreen] = useState(null); // null | 'name' | 'username' | 'email' | 'phone' | 'password' | 'deactivate' | 'delete'
 
   const saveName = async (newName) => {
     const result = await updateProfile(token, newName, currentUser?.email || '');
     onUserUpdated?.({ name: result.user.name, email: result.user.email });
+  };
+
+  // Freely changeable, and may be cleared (allowEmpty). The server is the
+  // source of truth for uniqueness / format; the inline check is advisory.
+  const saveUsername = async (newUsername) => {
+    const result = await updateUsername(token, newUsername);
+    onUserUpdated?.({ username: result.user.username || null });
   };
 
   if (subScreen === 'name') {
@@ -431,6 +444,28 @@ export default function AccountSettingsScreen({ token, currentUser, onBack, onUs
         initialValue={currentUser?.name || ''}
         placeholder="Your name"
         onSave={saveName}
+        onBack={() => setSubScreen(null)}
+      />
+    );
+  }
+
+  if (subScreen === 'username') {
+    return (
+      <EditFieldScreen
+        title="Username"
+        label="Username"
+        initialValue={currentUser?.username || ''}
+        placeholder="username"
+        prefix="@"
+        allowEmpty
+        autoCapitalize="none"
+        autoCorrect={false}
+        maxLength={20}
+        helperText={`${USERNAME_HINT} Leave blank to remove it. People can start a chat with you using your username.`}
+        normalize={(t) => t.toLowerCase().replace(/[^a-z0-9_]/g, '')}
+        validate={(v) => (v && !USERNAME_RE.test(v) ? USERNAME_HINT : null)}
+        checkAvailability={(v) => checkUsername(token, v)}
+        onSave={saveUsername}
         onBack={() => setSubScreen(null)}
       />
     );
@@ -478,6 +513,15 @@ export default function AccountSettingsScreen({ token, currentUser, onBack, onUs
           <Text style={styles.rowLabel}>Name</Text>
           <View style={styles.rowRight}>
             <Text style={styles.rowValue} numberOfLines={1}>{currentUser?.name || '-'}</Text>
+            <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+          </View>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.row} onPress={() => setSubScreen('username')} activeOpacity={0.6}>
+          <Text style={styles.rowLabel}>Username</Text>
+          <View style={styles.rowRight}>
+            <Text style={styles.rowValue} numberOfLines={1}>
+              {currentUser?.username ? `@${currentUser.username}` : 'Add'}
+            </Text>
             <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
           </View>
         </TouchableOpacity>

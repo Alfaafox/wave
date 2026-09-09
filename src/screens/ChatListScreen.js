@@ -149,14 +149,19 @@ export default function ChatListScreen({ token, currentUser, presenceMap, onOpen
   };
 
   const handlePickedUserForChat = async (user) => {
-    if (!user.phone) {
-      Alert.alert('Missing phone number', 'This contact has no phone number on record.');
+    // Contacts are matched by phone; a username-found user may have no phone
+    // on record, so fall back to their user id (the server's /start accepts
+    // either).
+    if (!user.phone && !user.id) {
+      Alert.alert('Missing details', 'This contact has no phone number on record.');
       return;
     }
     setPickerMode(null);
     setStarting(true);
     try {
-      const result = await startConversation(token, user.phone);
+      const result = user.phone
+        ? await startConversation(token, user.phone)
+        : await startConversation(token, null, user.id);
       await loadConversations();
       onOpenChat({ conversationId: result.conversationId, otherUser: result.with, isGroup: false });
     } catch (err) {

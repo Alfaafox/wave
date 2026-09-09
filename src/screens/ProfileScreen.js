@@ -6,6 +6,7 @@ import {
 import { colors, spacing, radii, shadow } from '../theme';
 import { Ionicons } from '@expo/vector-icons';
 import ImageViewerModal from '../components/ImageViewerModal';
+import QRCode from 'react-native-qrcode-svg';
 
 const MONO = Platform.OS === 'ios' ? 'Courier New' : 'monospace';
 
@@ -18,6 +19,7 @@ export default function ProfileScreen({ token, currentUser, onBack, onLogout, on
   // + upload and pushes the new data URI down through that prop.
   const picture = currentUser?.profilePicture || null;
   const phone = currentUser?.phoneNumber || null;
+  const username = currentUser?.username || null;
   const initial = (currentUser?.name || '?').charAt(0).toUpperCase();
 
   // The actual expo-image-picker call lives at the App.js level, NOT here.
@@ -114,6 +116,13 @@ export default function ProfileScreen({ token, currentUser, onBack, onLogout, on
           <Text style={styles.label}>Phone number</Text>
           <Text style={styles.value}>{phone || 'Not set'}</Text>
         </View>
+        <View style={styles.divider} />
+        <View style={styles.field}>
+          <Text style={styles.label}>Username</Text>
+          <Text style={[styles.value, !username && styles.valueMuted]}>
+            {username ? `@${username}` : 'Not set'}
+          </Text>
+        </View>
       </View>
 
       <View style={[styles.card, styles.menuCard]}>
@@ -162,11 +171,12 @@ export default function ProfileScreen({ token, currentUser, onBack, onLogout, on
           <Text style={styles.qrName}>{currentUser?.name || 'You'}</Text>
 
           <View style={styles.qrFrame}>
-            <View style={[styles.qrCorner, styles.qrCornerTL]} />
-            <View style={[styles.qrCorner, styles.qrCornerTR]} />
-            <View style={[styles.qrCorner, styles.qrCornerBL]} />
-            <View style={[styles.qrCorner, styles.qrCornerBR]} />
-            <Text style={styles.qrNumber}>{phone || 'Not set'}</Text>
+            <QRCode
+              value={phone || 'wavechat'}
+              size={200}
+              color={colors.textPrimary}
+              backgroundColor={colors.background}
+            />
           </View>
 
           <Text style={styles.qrSubtitle}>
@@ -212,6 +222,7 @@ const styles = StyleSheet.create({
   divider: { height: 1, backgroundColor: colors.divider },
   label: { fontSize: 12, color: colors.textMuted, marginBottom: 4 },
   value: { fontSize: 16, color: colors.textPrimary },
+  valueMuted: { color: colors.textMuted },
 
   menuCard: { marginTop: spacing.lg },
   menuRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: spacing.md },

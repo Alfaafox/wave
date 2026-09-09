@@ -91,11 +91,13 @@ export function unregisterPushToken(authToken, deviceId) {
   });
 }
 
-export function startConversation(token, phoneNumber) {
+// Start a 1:1 chat by phone number (contacts) or by user id (username tab -
+// a username-found user may have no phone number on record).
+export function startConversation(token, phoneNumber, userId) {
   return request('/conversations/start', {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ phoneNumber })
+    body: JSON.stringify(userId ? { userId } : { phoneNumber })
   });
 }
 
@@ -268,6 +270,27 @@ export function updateProfile(token, name, email) {
     method: 'PUT',
     headers: { Authorization: `Bearer ${token}` },
     body: JSON.stringify({ name, email })
+  });
+}
+
+// Username system. `username` may be '' / null to clear it.
+export function updateUsername(token, username) {
+  return request('/users/me', {
+    method: 'PUT',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ username: username || null })
+  });
+}
+export function checkUsername(token, username) {
+  return request(`/users/check-username/${encodeURIComponent(username)}`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` }
+  });
+}
+export function getUserByUsername(token, username) {
+  return request(`/users/by-username/${encodeURIComponent(username)}`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` }
   });
 }
 export function changePassword(token, currentPassword, newPassword) {

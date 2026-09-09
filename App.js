@@ -73,7 +73,8 @@ export default function App() {
               name: freshUser.name,
               email: freshUser.email,
               phoneNumber: freshUser.phone_number,
-              profilePicture: freshUser.profile_picture
+              profilePicture: freshUser.profile_picture,
+              username: freshUser.username || null
             };
             setCurrentUser(normalized);
             AsyncStorage.setItem('user', JSON.stringify(normalized));

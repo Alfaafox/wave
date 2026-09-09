@@ -5,7 +5,7 @@
 // and ArchivedChatsScreen so the two lists stay visually identical.
 
 import React from 'react';
-import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Image } from 'react-native';
 import { colors, spacing, radii, typography } from '../theme';
 
 export function previewText(lastMessage) {
@@ -20,6 +20,10 @@ export default function ConversationRow({ item, presenceMap, onPress, onLongPres
   const title = isGroup ? item.name : item.with?.name;
   const online = !isGroup && item.with?.id != null && !!presenceMap?.get?.(item.with.id)?.online;
   const hasUnread = item.unreadCount > 0;
+  // 1:1 chats carry the other party's picture on `with.profilePicture` (base64
+  // data URI or null) - GET /conversations already includes it. Groups have no
+  // picture concept, so they always fall back to the initial.
+  const avatarUri = !isGroup ? (item.with?.profilePicture || null) : null;
 
   return (
     <TouchableOpacity
@@ -29,9 +33,13 @@ export default function ConversationRow({ item, presenceMap, onPress, onLongPres
       onLongPress={onLongPress}
     >
       <View>
-        <View style={styles.avatar}>
-          <Text style={styles.avatarText}>{(title || '?').charAt(0).toUpperCase()}</Text>
-        </View>
+        {avatarUri ? (
+          <Image source={{ uri: avatarUri }} style={styles.avatar} resizeMode="cover" />
+        ) : (
+          <View style={styles.avatar}>
+            <Text style={styles.avatarText}>{(title || '?').charAt(0).toUpperCase()}</Text>
+          </View>
+        )}
         {online && <View style={styles.onlineDot} />}
       </View>
       <View style={{ flex: 1, marginLeft: spacing.md }}>
