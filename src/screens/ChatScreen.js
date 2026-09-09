@@ -20,6 +20,7 @@ import MediaPickerSheet from '../components/MediaPickerSheet';
 import ImageViewerModal from '../components/ImageViewerModal';
 import UserProfileModal from '../components/UserProfileModal';
 import ContactNotificationSettings from './ContactNotificationSettings';
+import SharedMediaScreen from './SharedMediaScreen';
 import TypingIndicator from '../components/TypingIndicator';
 import { colors, spacing, radii, typography, shadow } from '../theme';
 import { Ionicons } from '@expo/vector-icons';
@@ -155,6 +156,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
   const [wallpaperColor, setWallpaperColor] = useState(null);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
   const [notifSettingsOpen, setNotifSettingsOpen] = useState(false);
+  const [sharedMediaOpen, setSharedMediaOpen] = useState(false);
   const [contactMuted, setContactMuted] = useState(false);
   // Private Chat mode for this conversation (server-backed, on conversations
   // .private_chat). Seeded from GET /conversations on mount, kept live by the
@@ -541,7 +543,9 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     }
   };
 
-  const saveImage = async (uri) => {
+  // Stable (no closure over state/props) so it can be handed to
+  // SharedMediaScreen without churning its memoised list renderers.
+  const saveImage = useCallback(async (uri) => {
     try {
       const permission = await MediaLibrary.requestPermissionsAsync();
       if (!permission.granted) {
@@ -576,7 +580,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     } catch (err) {
       Alert.alert('Could not save image', err.message);
     }
-  };
+  }, []);
 
   const startRecording = async () => {
     try {
@@ -1474,6 +1478,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
         muted={contactMuted}
         onMuteChange={handleMuteChange}
         onOpenNotifications={() => { setProfileModalOpen(false); setNotifSettingsOpen(true); }}
+        onOpenSharedMedia={() => { setProfileModalOpen(false); setSharedMediaOpen(true); }}
         onLeaveGroup={onBack}
       />
 
@@ -1485,6 +1490,20 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
             muted={contactMuted}
             onMuteChange={handleMuteChange}
             onBack={() => { setNotifSettingsOpen(false); setProfileModalOpen(true); }}
+          />
+        </View>
+      )}
+
+      {sharedMediaOpen && (
+        <View style={styles.notifSettingsOverlay}>
+          <SharedMediaScreen
+            token={token}
+            conversationId={conversationId}
+            otherUser={otherUser}
+            isGroup={isGroup}
+            groupName={groupName}
+            onSaveImage={saveImage}
+            onBack={() => { setSharedMediaOpen(false); setProfileModalOpen(true); }}
           />
         </View>
       )}

@@ -67,6 +67,7 @@ export default function UserProfileModal({
   muted,
   onMuteChange,
   onOpenNotifications,
+  onOpenSharedMedia,
   onLeaveGroup,
   // Presence map owned by App.js (userId -> { online, lastSeen }), threaded
   // through ChatScreen. Named `presenceMap` upstream; passed here as `onlineUsers`.
@@ -267,8 +268,6 @@ export default function UserProfileModal({
   const images = Array.isArray(recentImages) ? recentImages.filter(Boolean).slice(0, 3) : [];
   const memberCount = members.length + 1; // server excludes the current user
 
-  const showComingSoon = () => Alert.alert('Coming soon');
-
   return (
     <>
       <Modal visible transparent animationType="slide" onRequestClose={onClose} statusBarTranslucent>
@@ -354,7 +353,7 @@ export default function UserProfileModal({
 
                   <View style={styles.divider} />
 
-                  <TouchableOpacity style={styles.row} onPress={showComingSoon}>
+                  <TouchableOpacity style={styles.row} onPress={onOpenSharedMedia}>
                     <Ionicons name="images-outline" size={20} color={colors.textSecondary} style={styles.rowIcon} />
                     <Text style={styles.rowLabel}>Media, Links &amp; Docs</Text>
                     {images.length > 0 ? (

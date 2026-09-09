@@ -138,6 +138,18 @@ export function searchMessages(token, conversationId, q, { limit = 20, offset = 
   });
 }
 
+// Shared media / links for the Shared Media screen. `type` is 'images' or
+// 'links'. images -> results: [{ id, content, created_at, user_id, sender_name }].
+// links  -> results: [{ id, url, created_at, user_id, sender_name }] (one row
+// per extracted URL). Both -> { results, total, hasMore }.
+export function getSharedMedia(token, conversationId, type, { limit = 30, offset = 0 } = {}) {
+  const params = new URLSearchParams({ type, limit: String(limit), offset: String(offset) });
+  return request(`/conversations/${conversationId}/media?${params.toString()}`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` }
+  });
+}
+
 // Per-user, per-conversation push-notification mute (server-backed).
 export function getConversationMute(token, conversationId) {
   return request(`/conversations/${conversationId}/mute`, {
