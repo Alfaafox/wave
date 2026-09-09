@@ -1191,12 +1191,16 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
                 </Text>
               )}
 
-              <View
-                style={inlineTimestamp ? styles.inlineMeta : styles.metaRow}
-                pointerEvents={inlineTimestamp ? 'none' : 'auto'}
-              >
-                {metaContent}
-              </View>
+              {inlineTimestamp && (
+                <View style={styles.inlineMeta} pointerEvents="none">
+                  {metaContent}
+                </View>
+              )}
+              {!inlineTimestamp && (
+                <View style={styles.metaRow}>
+                  {metaContent}
+                </View>
+              )}
               <ReactionPills
                 reactions={item.reactions}
                 currentUserId={currentUser.id}
