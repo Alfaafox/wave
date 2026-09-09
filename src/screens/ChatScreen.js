@@ -1,9 +1,10 @@
-import React, { useEffect, useState, useRef, useMemo } from 'react';
+import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import {
   View, Text, FlatList, TextInput, TouchableOpacity, StyleSheet,
   KeyboardAvoidingView, Platform, Image, Alert, ActivityIndicator,
-  Modal, Clipboard, Animated, Keyboard
+  Modal, Clipboard, Animated, Keyboard, PanResponder
 } from 'react-native';
+import Reanimated, { useSharedValue, useAnimatedStyle, withSpring } from 'react-native-reanimated';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as ImagePicker from 'expo-image-picker';
 import * as MediaLibrary from 'expo-media-library/legacy';
@@ -27,6 +28,72 @@ import { getMuteCache, setMuteCache } from '../utils/contactPrefs';
 
 const EDIT_DELETE_WINDOW_MS = 15 * 60 * 1000;
 
+// Swipe-to-reply tuning.
+const SWIPE_MAX = 80;        // translation is clamped here
+const SWIPE_THRESHOLD = 60;  // release past this fires the reply
+
+function truncate(text, max) {
+  const s = (text || '').replace(/\s+/g, ' ').trim();
+  return s.length > max ? `${s.slice(0, max)}...` : s;
+}
+
+// Wraps one message bubble with a right-swipe-to-reply gesture. Detection is a
+// memoised RN PanResponder (matching the project's existing PanResponder
+// convention - UserProfileModal / ImageViewerModal); the slide + the reply-icon
+// fade/scale run on the UI thread via reanimated shared values, so a drag never
+// touches the JS thread or re-renders the FlatList. Right-swipe only; vertical
+// drags are handed back to the list so scrolling is unaffected.
+function SwipeableMessage({ enabled, onTriggerReply, children }) {
+  const translateX = useSharedValue(0);
+  const triggerRef = useRef(onTriggerReply);
+  triggerRef.current = onTriggerReply;
+
+  const rowStyle = useAnimatedStyle(() => ({ transform: [{ translateX: translateX.value }] }));
+  const iconStyle = useAnimatedStyle(() => {
+    const p = Math.min(Math.max(translateX.value, 0) / SWIPE_THRESHOLD, 1);
+    return { opacity: p, transform: [{ scale: 0.5 + 0.5 * p }] };
+  });
+
+  const responder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => false,
+        onStartShouldSetPanResponderCapture: () => false,
+        // activeOffsetX [10, Infinity] + failOffsetY [-10, 10] + right-only +
+        // single finger. Returning false leaves the touch with the FlatList.
+        onMoveShouldSetPanResponder: (evt, g) => {
+          if (!enabled) return false;
+          if (evt.nativeEvent.touches.length > 1) return false;
+          return g.dx > 10 && Math.abs(g.dy) < 10;
+        },
+        onPanResponderMove: (evt, g) => {
+          translateX.value = Math.min(Math.max(g.dx, 0), SWIPE_MAX);
+        },
+        onPanResponderRelease: (evt, g) => {
+          const reached = g.dx >= SWIPE_THRESHOLD;
+          translateX.value = withSpring(0, { stiffness: 200, damping: 20, mass: 0.6 });
+          // Haptic feedback would fire here on `reached`; expo-haptics is not
+          // installed and a require() of a missing module fails at Metro bundle
+          // time (see CLAUDE.md), so it is intentionally skipped.
+          if (reached && enabled && triggerRef.current) triggerRef.current();
+        },
+        onPanResponderTerminate: () => {
+          translateX.value = withSpring(0, { stiffness: 200, damping: 20, mass: 0.6 });
+        },
+        onPanResponderTerminationRequest: () => true,
+      }),
+    [enabled, translateX]
+  );
+
+  return (
+    <View style={styles.swipeRow} {...(enabled ? responder.panHandlers : {})}>
+      <Reanimated.View style={[styles.swipeReplyIcon, iconStyle]} pointerEvents="none">
+        <Ionicons name="arrow-undo" size={18} color={colors.accent} />
+      </Reanimated.View>
+      <Reanimated.View style={rowStyle}>{children}</Reanimated.View>
+    </View>
+  );
+}
 
 // Render a search-result message preview with the matched term bolded. Only
 // the first occurrence is highlighted; a leading "..." marks a trimmed start.
@@ -122,6 +189,8 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
   const typingStartSentRef = useRef(0);
   const pauseEmitRef = useRef(null);
   const pulseAnim = useRef(new Animated.Value(1)).current;
+  // Reply preview bar slide-up (0 = hidden below, 1 = in place).
+  const replyBarAnim = useRef(new Animated.Value(0)).current;
 
   const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const recorderState = useAudioRecorderState(audioRecorder);
@@ -179,6 +248,17 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
       Alert.alert('Could not update', 'Check your connection and try again.');
     }
   };
+
+  useEffect(() => {
+    if (replyTo) {
+      replyBarAnim.setValue(0);
+      Animated.spring(replyBarAnim, { toValue: 1, useNativeDriver: true, speed: 20, bounciness: 4 }).start();
+    }
+  }, [replyTo]);
+
+  const handleSwipeReply = useCallback((message) => {
+    setReplyTo(message);
+  }, []);
 
   useEffect(() => {
     if (recorderState.isRecording) {
@@ -287,7 +367,13 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     };
     const handleDeletedForEveryone = ({ conversationId: cid, messageId }) => {
       if (cid !== conversationId) return;
-      setMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, deleted_for_everyone: 1, content: '' } : m)));
+      setMessages((prev) => prev.map((m) => {
+        if (m.id === messageId) return { ...m, deleted_for_everyone: 1, content: '' };
+        // Any message quoting the just-deleted one now shows "This message was
+        // deleted" in its quote (server also returns reply_deleted on refetch).
+        if (m.reply_to_id === messageId) return { ...m, reply_deleted: 1 };
+        return m;
+      }));
     };
     const handleReactionUpdate = ({ conversationId: cid, messageId, reactions }) => {
       if (cid !== conversationId) return;
@@ -1022,11 +1108,22 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
                 <View style={styles.replyPreview}>
                   <Text style={styles.replyPreviewName}>{item.reply_username}</Text>
                   <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                    {item.reply_type === 'image' && <Ionicons name="camera-outline" size={12} color={colors.textSecondary} style={{ marginRight: 4 }} />}
-                    {item.reply_type === 'audio' && <Ionicons name="mic-outline" size={12} color={colors.textSecondary} style={{ marginRight: 4 }} />}
-                    <Text style={styles.replyPreviewText} numberOfLines={1}>
-                      {item.reply_type === 'image' ? 'Photo' : item.reply_type === 'audio' ? 'Voice message' : item.reply_content}
-                    </Text>
+                    {item.reply_deleted ? (
+                      <>
+                        <Ionicons name="ban-outline" size={12} color={colors.textMuted} style={{ marginRight: 4 }} />
+                        <Text style={[styles.replyPreviewText, { fontStyle: 'italic' }]} numberOfLines={1}>
+                          This message was deleted
+                        </Text>
+                      </>
+                    ) : (
+                      <>
+                        {item.reply_type === 'image' && <Ionicons name="camera-outline" size={12} color={colors.textSecondary} style={{ marginRight: 4 }} />}
+                        {item.reply_type === 'audio' && <Ionicons name="mic-outline" size={12} color={colors.textSecondary} style={{ marginRight: 4 }} />}
+                        <Text style={styles.replyPreviewText} numberOfLines={1}>
+                          {item.reply_type === 'image' ? 'Photo' : item.reply_type === 'audio' ? 'Voice message' : item.reply_content}
+                        </Text>
+                      </>
+                    )}
                   </View>
                 </View>
               )}
@@ -1067,14 +1164,23 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
             </TouchableOpacity>
           );
 
-          if (item.id === highlightedMessageId) {
-            return (
-              <Animated.View style={[styles.highlightWrap, { backgroundColor: highlightBg }]}>
-                {bubble}
-              </Animated.View>
-            );
-          }
-          return bubble;
+          const withHighlight = item.id === highlightedMessageId ? (
+            <Animated.View style={[styles.highlightWrap, { backgroundColor: highlightBg }]}>
+              {bubble}
+            </Animated.View>
+          ) : bubble;
+
+          // Swipe-right-to-reply. Disabled in search mode, for deleted-for-
+          // everyone / system messages (both already return above), and when
+          // the other account is gone (no input bar to send a reply from).
+          return (
+            <SwipeableMessage
+              enabled={!searchMode && !accountUnavailable}
+              onTriggerReply={() => handleSwipeReply(item)}
+            >
+              {withHighlight}
+            </SwipeableMessage>
+          );
         }}
       />
 
@@ -1144,17 +1250,35 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
       )}
 
       {replyTo && !accountUnavailable && (
-        <View style={styles.replyBar}>
+        <Animated.View
+          style={[
+            styles.replyBar,
+            {
+              opacity: replyBarAnim,
+              transform: [{ translateY: replyBarAnim.interpolate({ inputRange: [0, 1], outputRange: [10, 0] }) }],
+            },
+          ]}
+        >
+          <Ionicons name="arrow-undo" size={16} color={colors.accent} style={{ marginRight: spacing.sm }} />
           <View style={{ flex: 1 }}>
-            <Text style={styles.replyBarName}>Replying to {replyTo.username}</Text>
+            <Text
+              style={[styles.replyBarName, replyTo.user_id === currentUser.id && styles.replyBarNameOwn]}
+              numberOfLines={1}
+            >
+              Reply to {replyTo.user_id === currentUser.id ? 'yourself' : (replyTo.username || 'Unknown')}
+            </Text>
             <Text style={styles.replyBarText} numberOfLines={1}>
-              {replyTo.message_type === 'image' ? 'Photo' : replyTo.message_type === 'audio' ? 'Voice message' : replyTo.content}
+              {replyTo.message_type === 'image'
+                ? 'Photo'
+                : replyTo.message_type === 'audio'
+                ? 'Voice message'
+                : truncate(replyTo.content, 80)}
             </Text>
           </View>
-          <TouchableOpacity onPress={() => setReplyTo(null)}>
+          <TouchableOpacity onPress={() => setReplyTo(null)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
             <Ionicons name="close" size={18} color={colors.textMuted} style={{ paddingHorizontal: spacing.sm }} />
           </TouchableOpacity>
-        </View>
+        </Animated.View>
       )}
 
       {editingMessage && !accountUnavailable && (
@@ -1431,6 +1555,14 @@ const styles = StyleSheet.create({
   srSnippetMatch: { fontWeight: '700', color: colors.textPrimary },
 
   highlightWrap: { borderRadius: radii.md },
+
+  // Swipe-to-reply: the icon sits absolutely at the row's left edge so it can
+  // never push the bubble's layout as it fades/scales in.
+  swipeRow: { position: 'relative' },
+  swipeReplyIcon: {
+    position: 'absolute', left: 8, top: 0, bottom: 0, width: 30,
+    alignItems: 'center', justifyContent: 'center',
+  },
   headerTitleRow: { flexDirection: 'row', alignItems: 'center' },
   headerLock: { marginRight: 4 },
   headerTitle: { color: colors.textPrimary, fontSize: 17, fontWeight: '600', flexShrink: 1 },
@@ -1483,7 +1615,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg, paddingVertical: spacing.sm,
     borderTopWidth: 1, borderTopColor: colors.border
   },
-  replyBarName: { fontSize: 12, fontWeight: '700', color: colors.accent },
+  replyBarName: { fontSize: 12, fontWeight: '700', color: colors.textPrimary },
+  replyBarNameOwn: { color: colors.accent },
   replyBarText: { fontSize: 12, color: colors.textSecondary },
 
   inputRow: {
