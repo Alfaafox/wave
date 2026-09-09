@@ -83,6 +83,8 @@ Several Expo media APIs are imported from their **`/legacy` subpath** (`expo-con
 
 Stored as a base64 `data:` URI in `users.profile_picture` (TEXT), set via `PUT /users/me/picture` (`updateProfilePicture` in `src/utils/api.js`), returned by `/users/me` and carried in contact-match results. **`ProfileScreen.js`**: tapping the avatar opens it full-screen in the shared `ImageViewerModal` (view-only — that modal now hides its save-to-gallery button when no `onSave` prop is passed); a separate **"Change profile picture"** button runs `ImagePicker.launchImageLibraryAsync` (gallery only, no camera) with `allowsEditing: true` (expo-image-picker's built-in crop UI — no separate crop lib) + `aspect: [1,1]` + **`quality: 1`** (full-size cropped original, not a thumbnail). There's a client-side ~7 MB base64 guard because the server's `express.json` limit is 8 MB and there's no object storage yet (Phase 9). No image-manipulation library is installed or needed.
 
+Where they render: `ProfileScreen` (own), `ChatScreen` header + search rows (other party), `ChatListScreen` header (own) + favourites strip, and — since Session 13 — the **chat-list rows and Archived Chats** via `ConversationRow.js` (`item.with.profilePicture`, from `GET /conversations`; 1:1 only, groups keep the initial). `UserProfileModal` too.
+
 ### Contacts matching
 
 `src/utils/contactsMatcher.js` normalizes each contact's phone number (`normalizePhone.js`, **default country code `91` / India**), SHA-256-hashes it (`expo-crypto`), and sends only the hashes to `/users/match-contacts` — the server never receives raw numbers.
@@ -170,6 +172,36 @@ Swipe a message bubble **right** to reply to it.
 - **Docs**: static `document-outline` + "No documents yet" — no backend call (no file-message type exists).
 - Pull-to-refresh on Media + Links; full-screen spinner on first load; retry button when a first load errors (a failed *refresh* keeps stale data visible).
 
+### Username system (Session 13)
+
+Optional lowercase handle. **The server side was already built & deployed in an earlier unrecorded session** — the `db.js` migration comment is tagged "Session 16", so this doc's session numbers have drifted; treat them as approximate. Session 13 audited the server, finished the client, and fixed an unrelated chat-list avatar gap (below).
+
+**Rule** — one source of truth, `routes/users.js` `USERNAME_RE = /^[a-z][a-z0-9_]{2,19}$/`: 3-20 chars, starts with a lowercase letter, `[a-z0-9_]` only. Stored exactly as typed (the regex forces lowercase). Optional (nullable), unique, **freely changeable**, **no public directory** — exact-match lookups only, nothing is ever listed.
+
+**DB** (`db.js`): plain `ALTER TABLE users ADD COLUMN username TEXT` + `CREATE UNIQUE INDEX idx_users_username ON users (username)` (SQLite ADD COLUMN can't carry UNIQUE; NULLs are distinct, so handle-less users coexist). Verified live: column + index present.
+
+**Endpoints** (`routes/users.js`, all `requireAuth`, all per-user rate-limited):
+- `PUT /users/me` — partial update; `username` may appear alongside `name`/`email`. `null` / `''` / whitespace → `username = NULL` (clear). Otherwise regex-checked (400) + uniqueness-checked (`... AND id != ?` → 409, with a `UNIQUE`-constraint catch as a race backstop). Returns `{ message, user }` (user carries `username`).
+- `GET /users/check-username/:username` — live availability for the editor (40/min/user). Returns `{ available, reason?: 'invalid'|'taken', self?: bool }`; `self:true` = the caller's own current handle (still "available").
+- `GET /users/by-username/:username` — resolve to `{ id, name, username, phoneNumber, profilePicture }` (30/min/user; `status='active'` only; 404 unknown; 400 if it's the caller's own).
+- `POST /conversations/start` accepts `{ userId }` as an alternative to `{ phoneNumber }` (a username-found user may have no phone on record); both paths share the existing 1:1 dedupe + block check.
+- `/users/me`, `POST /auth/login`, and the `profileUpdated` socket payload (`pushProfileUpdate`) all carry `username` (camelCase).
+
+**Client**:
+- `src/utils/api.js` — `updateUsername(token, username)` (send falsy to clear), `checkUsername(token, username)`, `getUserByUsername(token, username)`; `startConversation(token, phoneNumber, userId)` sends `{ userId }` when `userId` is passed, else `{ phoneNumber }`.
+- `src/components/EditFieldScreen.js` — grew generic support for a validated / live-checked field: `normalize(text)` (per-keystroke transform), `validate(value)` (format-error string), `checkAvailability(value)` (Promise, run **600ms** after the last keystroke, stale-guarded by a req-id ref), `allowEmpty`, `prefix` (leading `@`), `helperText`, + `autoCapitalize`/`autoCorrect`/`maxLength` passthrough. Status line = Ionicons (`checkmark-circle` / `close-circle` / `alert-circle`) + `colors.online`/`colors.danger`. Save disabled while `checking`/`invalid`/`unavailable`. The Name edit still uses this component unchanged.
+- `src/screens/AccountSettingsScreen.js` — new **Username** row (shows `@handle` or "Add") → `EditFieldScreen` with `@` prefix, `normalize` = lowercase + strip `[^a-z0-9_]`, `validate` = the regex, `checkAvailability` = `checkUsername`, `allowEmpty` (blank clears), `maxLength 20`. `saveUsername` → `updateUsername` → `onUserUpdated({ username })`.
+- `src/screens/ProfileScreen.js` — shows `@username` ("Not set", muted) in the info card.
+- `src/screens/ContactPickerScreen.js` — **username search in New Chat** (`mode === 'chat'` only). 600ms-debounced `getUserByUsername` on any term matching `USERNAME_RE` (leading `@` stripped), stale-guarded. A "Username" section above the contact list: `checking` spinner / `found` row (avatar + name + `@handle` + chat icon → starts the 1:1) / `notfound`. `checking`/`notfound` show **only when the user typed a leading `@`** — a bare lowercase name search stays quiet unless there's a positive hit. Also swapped this screen's last raw emoji (`🔍`, `←`) for Ionicons.
+- `src/screens/ChatListScreen.js` — `handlePickedUserForChat` no longer hard-requires a phone: `user.phone ? startConversation(token, user.phone) : startConversation(token, null, user.id)`.
+- `App.js` — `username` threaded through the bootstrap `/users/me` normalize, login `data.user`, and `handleUserUpdated` merge.
+
+**Chat-list display pictures (fixed here, unrelated)** — `src/components/ConversationRow.js` (shared by the chat-list home page **and** Archived Chats) rendered initials only. `GET /conversations` already returns `with.profilePicture` (base64 data URI, since Session 8), so 1:1 rows now render an `<Image>` when it's present, else the initial; groups keep the initial (no group-picture concept). The favourites strip + header avatar already rendered pictures.
+
+**Validation** — server: 14-assertion live e2e (set / self-check / taken / resolve / not-self / uppercase-normalisation / start-by-userId / 409 dup / free-change / clear-to-null / 3 invalid-format 400s), re-run green after `pm2 restart` (#70, error.log clean, `/health` ok). Client: `babel-preset-expo` parse of every changed file + a full `npx expo export --platform android` (clean 4.8 MB bundle) + mojibake scan — **not yet run on a device** (pure JS, hot-reloads, no native dep). Server backups `.bak-1788952193`; client commit `ac51fd7` on `main`.
+
+**Test-DB pollution** — one empty 1:1 conversation (id 17, GuruD↔Alpha, 0 messages) left by the e2e `{userId}` start; harmless. Clean when convenient: `DELETE FROM conversation_members WHERE conversation_id=17; DELETE FROM conversations WHERE id=17;`.
+
 ## Gotchas
 
 - **`/android` and `/ios` are gitignored** (`app.json` treats them as prebuild output) but `android/` is currently checked out locally as a prebuilt project. Native/config-plugin changes require re-running prebuild or a fresh EAS build; they won't hot-reload.
@@ -201,7 +233,7 @@ Swipe a message bubble **right** to reply to it.
   - `rateLimiter.js` (the in-memory sliding-window helper) is STILL used by `routes/auth.js` for `/auth/forgot-password`, `/auth/reset-password`, `/auth/verify-otp` and by `routes/notifications.js` for `/notifications/token` — not removed, just no longer used for login.
   - Both are per-process (single pm2 instance). No reverse proxy in front of `:3000`, so `req.ip` is the real client IP and Express `trust proxy` stays `false` (keeps express-rate-limit's proxy validation happy). If ever scaled multi-instance / put behind a proxy: move both to a shared store (Redis) and set `trust proxy`.
 - Password reset flow — DONE (Session 5), see Section F.
-- Username system — currently phone-number only, affects all future social features
+- Username system — DONE (server built in an earlier unrecorded session; client finished Session 13). Optional handle `/^[a-z][a-z0-9_]{2,19}$/`, unique, freely changeable, no directory; used for own-profile display + New Chat lookup (chat by username needs no phone). See "Username system" in Architecture. Not yet device-tested. Phone-based identity is still the primary key everywhere else.
 
 ### Phase 2 — Complete Calling
 - Call timeout — DONE (see Phase 0)
@@ -399,7 +431,7 @@ This touches every screen file (15+). Must be one complete dedicated pass.
 Do not build more screens before this that will need retrofitting.
 
 ### Username system affects all social features
-Build username system before any feature that assumes phone-based identity.
+Optional handles shipped (Session 13, see "Username system" in Architecture) — lookup + own-profile display + phone-less 1:1 start. Identity is still phone-based everywhere else (`phone_hash` is the contact-match key, `conversation_members` is by user id). A feature that wants username-as-identity still needs that groundwork.
 
 ### Session model needed before security features
 Currently stateless JWTs. Two-step verification, linked devices, log out all devices all require real session tracking first.
@@ -485,7 +517,9 @@ FCM V1 is fully set up:
 
 ---
 
-*Last updated: Session 12 (2026-09-09).*
+*Last updated: Session 13 (2026-09-09).*
+
+*Session 13 — **Username system** (see "Username system" in Architecture). Server side (`db.js` `username` column + `idx_users_username`; `routes/users.js` `PUT /users/me` username branch + `GET /users/check-username/:u` + `GET /users/by-username/:u`; `routes/conversations.js` `POST /start` `{userId}`; `username` in `/users/me` / login / `profileUpdated`) was **already built & deployed in an earlier unrecorded session** (its `db.js` comment says "Session 16" — session numbering here has drifted). Session 13 audited it (14-assertion live e2e, all green; `pm2 restart` #70, error.log clean, `/health` ok — server backups `.bak-1788952193`) and finished the client: `api.js` (`updateUsername` / `checkUsername` / `getUserByUsername`, `startConversation(…, userId)`); `EditFieldScreen.js` generic validated/live-checked-field props (`normalize` / `validate` / `checkAvailability` 600ms debounce / `prefix` / `allowEmpty`) with an Ionicons status line; `AccountSettingsScreen.js` new Username row + editor; `ProfileScreen.js` `@username`; `ContactPickerScreen.js` username search in New Chat (debounced exact-match lookup, result row starts a phone-less 1:1; last raw emoji → Ionicons); `ChatListScreen.js` start-by-userId fallback; `App.js` carries `username` through bootstrap / login / update. **Also fixed (unrelated):** `ConversationRow.js` rendered initials only — chat-list rows + Archived Chats now show `with.profilePicture` (1:1; already in the `GET /conversations` payload since Session 8). Client `babel-preset-expo` parse + full `npx expo export --platform android` (clean) + mojibake scan; **not device-tested** (pure JS). Commit `ac51fd7` on `main`. Bundled in that commit: pre-existing in-tree QR work (`react-native-qrcode-svg` / `react-native-svg` — native deps, need `npx expo run:android`; `ProfileScreen` QR now a real QR of the phone number). Leftover e2e artifact: empty conversation id 17 (see the section).*
 
 *Session 12 — **Shared Media screen** (see "Shared Media screen" in Architecture). New `src/screens/SharedMediaScreen.js` (Media / Links / Docs tabs), opened from `UserProfileModal`'s "Media, Links & Docs" row (was "Coming soon"), rendered as a `ChatScreen` overlay (no App.js change). Backend `GET /conversations/:id/media?type=images|links` — membership 403 / private-chat 7-day window / type 400 / 60-per-min rate limit; images newest-first, links flattened to one row per extracted URL; scoped to the conversation. Deployed (`routes/conversations.js.bak-1788934408`), `node --check` + `/health` + 21-assertion e2e green, error.log clean. Client: `getSharedMedia` in `api.js`; month-grouped photo grid via a single flat-data FlatList with fixed `getItemLayout` (not `numColumns=3`/`SectionList` — see the section for why), reuses `ImageViewerModal` + ChatScreen's `saveImage`, RN-core `Share`/`Linking`. Per-tab caching, strict 30/page. JS-only, babel-parsed + mojibake-clean, not device-tested.*
 
