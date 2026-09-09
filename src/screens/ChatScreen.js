@@ -635,6 +635,11 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
   };
 
   const headerTitle = isGroup ? (groupName || 'Group') : (otherUser?.name || 'Chat');
+  // Header avatar: the other party's picture for 1:1, else initials (first
+  // letter of the name / group name) on the accent colour - same pattern as
+  // ChatListScreen / UserProfileModal.
+  const headerInitial = (headerTitle || '?').trim().charAt(0).toUpperCase() || '?';
+  const headerAvatarUri = isGroup ? null : (otherUser?.profilePicture || null);
 
   // The other party's account state, from GET /conversations' `with.status`
   // ('active' | 'inactive' = deactivated | 'deleted'). When it's not active,
@@ -703,6 +708,20 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
       <View style={styles.header}>
         <TouchableOpacity onPress={onBack} style={styles.backBtn}>
           <Ionicons name="arrow-back" size={24} color={colors.textPrimary} />
+        </TouchableOpacity>
+        <TouchableOpacity
+          onPress={() => setProfileModalOpen(true)}
+          disabled={isGroup ? false : !otherUser?.id}
+          activeOpacity={0.6}
+          style={styles.headerAvatarBtn}
+        >
+          {headerAvatarUri ? (
+            <Image source={{ uri: headerAvatarUri }} style={styles.headerAvatarImg} />
+          ) : (
+            <View style={styles.headerAvatarFallback}>
+              <Text style={styles.headerAvatarInitial}>{headerInitial}</Text>
+            </View>
+          )}
         </TouchableOpacity>
         <TouchableOpacity
           style={{ flex: 1 }}
@@ -1019,6 +1038,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
         visible={profileModalOpen}
         onClose={() => setProfileModalOpen(false)}
         token={token}
+        currentUser={currentUser}
         isGroup={isGroup}
         groupName={groupName}
         conversationId={conversationId}
@@ -1058,6 +1078,13 @@ const styles = StyleSheet.create({
   },
   backBtn: { marginRight: spacing.md, padding: 2 },
   backArrow: { color: colors.textPrimary, fontSize: 22 },
+  headerAvatarBtn: { marginRight: spacing.sm },
+  headerAvatarImg: { width: 36, height: 36, borderRadius: 18 },
+  headerAvatarFallback: {
+    width: 36, height: 36, borderRadius: 18, backgroundColor: colors.accent,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  headerAvatarInitial: { color: colors.textOnAccent, fontSize: 16, fontWeight: '700' },
   headerTitleRow: { flexDirection: 'row', alignItems: 'center' },
   headerLock: { marginRight: 4 },
   headerTitle: { color: colors.textPrimary, fontSize: 17, fontWeight: '600', flexShrink: 1 },

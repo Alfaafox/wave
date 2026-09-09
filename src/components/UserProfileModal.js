@@ -55,6 +55,10 @@ export default function UserProfileModal({
   visible,
   onClose,
   token,
+  // The logged-in user. Passed through from ChatScreen for completeness of the
+  // contract; not consumed yet (block / favourite / mute / private-chat all key
+  // off `otherUser` + `token`).
+  currentUser,
   isGroup,
   groupName,
   conversationId,
