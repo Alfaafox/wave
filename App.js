@@ -23,6 +23,7 @@ import ChatsSettingsScreen from './src/screens/ChatsSettingsScreen';
 import AppearanceSettingsScreen from './src/screens/AppearanceSettingsScreen';
 import NotificationsSettingsScreen from './src/screens/NotificationsSettingsScreen';
 import InviteFriendScreen from './src/screens/InviteFriendScreen';
+import StarredMessagesScreen from './src/screens/StarredMessagesScreen';
 import NotificationBanner from './src/components/NotificationBanner';
 import { colors } from './src/theme';
 import { disconnectSocket, connectSocket } from './src/utils/socket';
@@ -449,6 +450,14 @@ export default function App() {
               onOpenChat={openChat}
               onLogout={handleLogout}
               onOpenProfile={() => setScreen('settings')}
+              onOpenStarred={() => setScreen('starredMessages')}
+            />
+          )}
+          {screen === 'starredMessages' && (
+            <StarredMessagesScreen
+              token={token}
+              onBack={() => setScreen('chatList')}
+              onOpenChat={openChat}
             />
           )}
           {screen === 'calls' && (
@@ -466,6 +475,7 @@ export default function App() {
               isGroup={activeChat.isGroup}
               groupName={activeChat.groupName}
               presenceMap={presenceMap}
+              jumpToMessageId={activeChat.scrollToMessageId}
               onStartCall={startCall}
               onBack={() => setScreen('chatList')}
             />

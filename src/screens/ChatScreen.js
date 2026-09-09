@@ -13,7 +13,7 @@ import {
   AudioModule, RecordingPresets, setAudioModeAsync,
   useAudioRecorder, useAudioRecorderState, useAudioPlayer, useAudioPlayerStatus
 } from 'expo-audio';
-import { getMessages, getConversations, setConversationMute, setPrivateChat, searchMessages, SERVER_URL } from '../utils/api';
+import { getMessages, getConversations, setConversationMute, setPrivateChat, searchMessages, starMessage, unstarMessage, SERVER_URL } from '../utils/api';
 import { connectSocket } from '../utils/socket';
 import { ReactionPicker, ReactionPills } from '../components/MessageReactions';
 import MediaPickerSheet from '../components/MediaPickerSheet';
@@ -136,7 +136,7 @@ function AudioBubble({ uri, isMine }) {
   );
 }
 
-export default function ChatScreen({ token, currentUser, conversationId, otherUser, isGroup, groupName, presenceMap, onBack, onStartCall }) {
+export default function ChatScreen({ token, currentUser, conversationId, otherUser, isGroup, groupName, presenceMap, onBack, onStartCall, jumpToMessageId }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   // 3-state typing indicator for whoever last started typing in this chat.
@@ -179,6 +179,10 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
   const [headerHeight, setHeaderHeight] = useState(0);
   const autoSaveRef = useRef(false);
   const listRef = useRef(null);
+  // The message id we last auto-scrolled to for a deep link (from Starred
+  // Messages). messages.id is globally unique, so comparing the value is
+  // enough to fire the jump exactly once per distinct target.
+  const lastJumpedIdRef = useRef(null);
   const socketRef = useRef(null);
   const searchDebounceRef = useRef(null);
   const searchReqIdRef = useRef(0);
@@ -635,6 +639,41 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     closeActionMenu();
   };
 
+  // messages.starred_by is a JSON array string of user ids (or null). A message
+  // is "starred" for us when it contains our own id.
+  const parseStarredBy = (raw) => {
+    if (!raw) return [];
+    try {
+      const arr = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      return Array.isArray(arr) ? arr : [];
+    } catch (e) {
+      return [];
+    }
+  };
+  const isMessageStarred = (item) => parseStarredBy(item?.starred_by).includes(currentUser.id);
+
+  const handleToggleStar = () => {
+    const msg = actionMenuFor;
+    closeActionMenu();
+    if (!msg) return;
+    const currentlyStarred = isMessageStarred(msg);
+    const prevStarredBy = msg.starred_by ?? null;
+
+    // Optimistic: flip our id in the local array immediately.
+    setMessages((prev) => prev.map((m) => {
+      if (m.id !== msg.id) return m;
+      let arr = parseStarredBy(m.starred_by);
+      arr = currentlyStarred ? arr.filter((n) => n !== currentUser.id) : [...arr, currentUser.id];
+      return { ...m, starred_by: arr.length ? JSON.stringify(arr) : null };
+    }));
+
+    const call = currentlyStarred ? unstarMessage : starMessage;
+    call(token, conversationId, msg.id).catch((err) => {
+      setMessages((prev) => prev.map((m) => (m.id === msg.id ? { ...m, starred_by: prevStarredBy } : m)));
+      Alert.alert('Could not update', err.message);
+    });
+  };
+
   const handleEdit = () => {
     const msg = actionMenuFor;
     const age = Date.now() - new Date(msg.created_at.replace(' ', 'T') + (msg.created_at.includes('Z') ? '' : 'Z')).getTime();
@@ -892,6 +931,20 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     return true;
   };
 
+  // Deep link from Starred Messages (or any "open chat at this message"
+  // caller): once this conversation's messages have loaded, jump to the
+  // target once and flash-highlight it. If it's outside the loaded window
+  // scrollToMessageId shows its own "older than loaded history" alert.
+  useEffect(() => {
+    if (!jumpToMessageId || messages.length === 0) return;
+    if (lastJumpedIdRef.current === jumpToMessageId) return;
+    lastJumpedIdRef.current = jumpToMessageId;
+    const t = setTimeout(() => {
+      if (scrollToMessageId(jumpToMessageId)) flashHighlight(jumpToMessageId);
+    }, 400);
+    return () => clearTimeout(t);
+  }, [jumpToMessageId, messages.length]);
+
   const openResult = (index) => {
     if (index < 0 || index >= searchResults.length) return;
     const msg = searchResults[index];
@@ -1142,6 +1195,9 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
               onLongPress={() => openActionMenu(item)}
               style={[styles.bubble, isMine ? styles.bubbleMine : styles.bubbleTheirs]}
             >
+              {isMessageStarred(item) && (
+                <Ionicons name="star-outline" size={11} color="#FFD700" style={styles.bubbleStarBadge} pointerEvents="none" />
+              )}
               {isGroup && !isMine && <Text style={styles.senderName}>{item.username}</Text>}
 
               {item.reply_to_id && (
@@ -1435,6 +1491,19 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
             <TouchableOpacity style={styles.actionItem} onPress={openReactionPicker}>
               <Text style={styles.actionText}>React</Text>
             </TouchableOpacity>
+            {actionMenuFor && (
+              <TouchableOpacity style={styles.actionItem} onPress={handleToggleStar}>
+                <View style={styles.actionItemRow}>
+                  <Ionicons
+                    name={isMessageStarred(actionMenuFor) ? 'star' : 'star-outline'}
+                    size={17}
+                    color={isMessageStarred(actionMenuFor) ? '#FFD700' : colors.textPrimary}
+                    style={{ marginRight: 10 }}
+                  />
+                  <Text style={styles.actionText}>{isMessageStarred(actionMenuFor) ? 'Unstar' : 'Star'}</Text>
+                </View>
+              </TouchableOpacity>
+            )}
             {actionMenuFor?.message_type === 'image' && (
               <TouchableOpacity style={styles.actionItem} onPress={() => { const msg = actionMenuFor; closeActionMenu(); saveImage(msg.content); }}>
                 <Text style={styles.actionText}>Save to Gallery</Text>
@@ -1683,6 +1752,9 @@ const styles = StyleSheet.create({
   // at the end of the message text.
   inlineMeta: { position: 'absolute', right: 8, bottom: 4, flexDirection: 'row', alignItems: 'center' },
   inlineMetaSpacer: { fontSize: 10, color: 'transparent' },
+  // Tiny gold star at the bubble's bottom-left, shown only when the current
+  // user has starred this message.
+  bubbleStarBadge: { position: 'absolute', left: 5, bottom: 3 },
   editedLabel: { fontSize: 10, marginRight: 4, fontStyle: 'italic' },
   bubbleTime: { fontSize: 10, marginRight: 4 },
 
@@ -1739,6 +1811,7 @@ const styles = StyleSheet.create({
   actionOverlay: { flex: 1, backgroundColor: colors.overlay, justifyContent: 'center', alignItems: 'center' },
   actionMenu: { backgroundColor: colors.background, borderRadius: radii.md, width: 220, paddingVertical: spacing.sm, ...shadow.md },
   actionItem: { paddingVertical: 14, paddingHorizontal: spacing.xl },
+  actionItemRow: { flexDirection: 'row', alignItems: 'center' },
   actionText: { fontSize: 16, color: colors.textPrimary },
   modalOverlay: { flex: 1, backgroundColor: colors.overlay, justifyContent: 'flex-end' },
   forwardBox: { backgroundColor: colors.background, padding: spacing.lg, borderTopLeftRadius: radii.md, borderTopRightRadius: radii.md, maxHeight: '60%' },

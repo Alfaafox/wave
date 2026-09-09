@@ -17,7 +17,7 @@ function previewText(lastMessage) {
   return lastMessage.content;
 }
 
-export default function ChatListScreen({ token, currentUser, presenceMap, onOpenChat, onLogout, onOpenProfile }) {
+export default function ChatListScreen({ token, currentUser, presenceMap, onOpenChat, onLogout, onOpenProfile, onOpenStarred }) {
   const [conversations, setConversations] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
   const [starting, setStarting] = useState(false);
@@ -87,7 +87,7 @@ export default function ChatListScreen({ token, currentUser, presenceMap, onOpen
 
   const menuAction = (fn) => () => {
     setMenuOpen(false);
-    fn();
+    if (typeof fn === 'function') fn();
   };
 
   const openChatPicker = () => {
@@ -354,10 +354,7 @@ export default function ChatListScreen({ token, currentUser, presenceMap, onOpen
               <Ionicons name="checkmark-done-outline" size={18} color={colors.textPrimary} />
               <Text style={styles.menuItemText}>Mark All as Read</Text>
             </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.menuItem}
-              onPress={menuAction(() => Alert.alert('Coming soon - Starred Messages'))}
-            >
+            <TouchableOpacity style={styles.menuItem} onPress={menuAction(onOpenStarred)}>
               <Ionicons name="star-outline" size={18} color={colors.textPrimary} />
               <Text style={styles.menuItemText}>Starred Messages</Text>
             </TouchableOpacity>

@@ -123,6 +123,29 @@ export function markAllConversationsRead(token) {
   });
 }
 
+// Starred / bookmarked messages. star/unstar toggle messages.starred_by
+// (server-side JSON array of user ids); getStarredMessages returns only the
+// caller's own starred messages across every conversation.
+export function starMessage(token, conversationId, messageId) {
+  return request(`/conversations/${conversationId}/messages/${messageId}/star`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` }
+  });
+}
+export function unstarMessage(token, conversationId, messageId) {
+  return request(`/conversations/${conversationId}/messages/${messageId}/unstar`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` }
+  });
+}
+export function getStarredMessages(token, { limit = 20, offset = 0 } = {}) {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  return request(`/users/me/starred-messages?${params.toString()}`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` }
+  });
+}
+
 export function getMessages(token, conversationId) {
   return request(`/conversations/${conversationId}/messages`, {
     method: 'GET',
