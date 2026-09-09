@@ -10,6 +10,7 @@ import * as Crypto from 'expo-crypto';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Constants from 'expo-constants';
 import { registerPushToken, unregisterPushToken } from './api';
+import { getNotifPrefs } from './notifPrefs';
 
 // app.json -> expo.extra.eas.projectId. Needed by getExpoPushTokenAsync.
 // Read from the runtime config, with the literal as a last-resort fallback.
@@ -54,15 +55,27 @@ export async function getDeviceId() {
   return cachedDeviceId;
 }
 
+// The 'messages' channel reflects the wave:notif:sound / wave:notif:vibrate
+// prefs: sound on -> HIGH (heads-up + sound), sound off -> LOW (silent, shade
+// only); vibrate off -> empty pattern. The 'calls' channel is always MAX and
+// always vibrates - a call has to be felt.
+function messagesChannelConfig(prefs) {
+  return {
+    name: 'Messages',
+    importance: prefs.sound
+      ? Notifications.AndroidImportance.HIGH
+      : Notifications.AndroidImportance.LOW,
+    vibrationPattern: prefs.vibrate ? [0, 250, 250, 250] : [],
+    enableVibrate: prefs.vibrate,
+    lockscreenVisibility: Notifications.AndroidNotificationVisibility.PRIVATE,
+  };
+}
+
 export async function setupAndroidChannels() {
   if (Platform.OS !== 'android') return;
   try {
-    await Notifications.setNotificationChannelAsync('messages', {
-      name: 'Messages',
-      importance: Notifications.AndroidImportance.HIGH,
-      vibrationPattern: [0, 250, 250, 250],
-      lockscreenVisibility: Notifications.AndroidNotificationVisibility.PRIVATE,
-    });
+    const prefs = await getNotifPrefs();
+    await Notifications.setNotificationChannelAsync('messages', messagesChannelConfig(prefs));
     await Notifications.setNotificationChannelAsync('calls', {
       name: 'Calls',
       importance: Notifications.AndroidImportance.MAX,
@@ -71,6 +84,23 @@ export async function setupAndroidChannels() {
     });
   } catch (err) {
     console.warn('notif channel setup failed:', err?.message);
+  }
+}
+
+// Re-apply the 'messages' channel from the current sound / vibrate prefs.
+// Android LOCKS a channel's importance and vibration once it exists -
+// setNotificationChannelAsync silently keeps the old values for an existing
+// channel - so this deletes and recreates it. Call it from the Notifications
+// settings screen right after the user flips Sound or Vibration. No-op on iOS
+// (channels don't exist there; iOS sound/vibration is OS-controlled).
+export async function applyMessageChannelPrefs() {
+  if (Platform.OS !== 'android') return;
+  try {
+    const prefs = await getNotifPrefs();
+    await Notifications.deleteNotificationChannelAsync('messages');
+    await Notifications.setNotificationChannelAsync('messages', messagesChannelConfig(prefs));
+  } catch (err) {
+    console.warn('notif channel prefs apply failed:', err?.message);
   }
 }
 

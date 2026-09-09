@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { View, ActivityIndicator, Alert, AppState } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { StatusBar } from 'expo-status-bar';
@@ -37,6 +37,7 @@ import {
   registerDeviceForPush,
   unregisterDeviceForPush,
 } from './src/utils/notifications';
+import { getNotifPrefs, DEFAULT_NOTIF_PREFS } from './src/utils/notifPrefs';
 
 const TAB_SCREENS = ['chatList', 'calls', 'updates'];
 
@@ -57,9 +58,21 @@ export default function App() {
   // ChatScreen needs it correct on mount and the chat list unmounts often.
   const [presenceMap, setPresenceMap] = useState(() => new Map());
 
+  // Device-local notification toggles (Notifications settings screen). The ref
+  // mirrors the state so the notification listeners - whose closures are fixed
+  // at subscribe time - always read the current values without re-subscribing.
+  const [notifPrefs, setNotifPrefs] = useState(DEFAULT_NOTIF_PREFS);
+  const notifPrefsRef = useRef(DEFAULT_NOTIF_PREFS);
+  const applyNotifPrefs = useCallback((next) => {
+    notifPrefsRef.current = next;
+    setNotifPrefs(next);
+  }, []);
+
   useEffect(() => {
     (async () => {
       try {
+        applyNotifPrefs(await getNotifPrefs());
+
         const savedToken = await AsyncStorage.getItem('token');
         const savedUser = await AsyncStorage.getItem('user');
         if (savedToken && savedUser) {
@@ -436,7 +449,15 @@ export default function App() {
     const recvSub = Notifications.addNotificationReceivedListener((notification) => {
       const content = notification?.request?.content;
       if (!content) return;
-      setBanner({ title: content.title, body: content.body, data: content.data || {} });
+      const data = content.data || {};
+      // Device-local toggles: when a category is off we hide the in-app banner
+      // (and so don't route from it). The OS notification still lands in the
+      // tray - tapping it goes through the response listener below, which
+      // always routes.
+      const prefs = notifPrefsRef.current;
+      if ((data.type === 'call' || data.type === 'missedCall') && !prefs.calls) return;
+      if (data.type === 'message' && !prefs.messages) return;
+      setBanner({ title: content.title, body: content.body, data });
     });
     const respSub = Notifications.addNotificationResponseReceivedListener((response) => {
       routeFromNotification(response?.notification?.request?.content?.data || {});
@@ -567,7 +588,10 @@ export default function App() {
             <AppearanceSettingsScreen onBack={() => setScreen('settings')} />
           )}
           {screen === 'settingsNotifications' && (
-            <NotificationsSettingsScreen onBack={() => setScreen('settings')} />
+            <NotificationsSettingsScreen
+              onBack={() => setScreen('settings')}
+              onPrefsChange={applyNotifPrefs}
+            />
           )}
           {screen === 'settingsInvite' && (
             <InviteFriendScreen onBack={() => setScreen('settings')} />
