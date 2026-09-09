@@ -1,4 +1,4 @@
-﻿// src/screens/CallScreen.js
+// src/screens/CallScreen.js
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Alert, Animated, Easing, StatusBar, Platform, Dimensions, Vibration } from 'react-native';
 import { RTCView } from 'react-native-webrtc';
@@ -31,7 +31,10 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
   // Keying RTCView on this count forces a clean remount the moment video shows up.
   const [remoteVideoTrackCount, setRemoteVideoTrackCount] = useState(0);
   const [muted, setMuted] = useState(false);
-  const [speakerOn, setSpeakerOn] = useState(false);
+  // Audio route: 'bluetooth' | 'earpiece' | 'speaker'. Seeded from the native
+  // module once the call is up and kept live by its onAudioRouteChanged event.
+  const [audioRoute, setAudioRoute] = useState('earpiece');
+  const [availableRoutes, setAvailableRoutes] = useState(['earpiece', 'speaker']);
   const [cameraOff, setCameraOff] = useState(false);
   const [duration, setDuration] = useState(0);
   const callManagerRef = useRef(null);
@@ -183,6 +186,37 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
     return () => clearInterval(durationTimerRef.current);
   }, [status]);
 
+  // Live audio-route updates from the native module (headset connect/disconnect,
+  // or our own setAudioRoute). Subscribed for the life of the screen.
+  useEffect(() => {
+    let sub;
+    try {
+      sub = ExpoCallAudioModule.addListener?.('onAudioRouteChanged', (e) => {
+        if (e?.route) setAudioRoute(e.route);
+      });
+    } catch (err) {
+      console.log('[CALL] WARNING - audio route listener failed:', err?.message);
+    }
+    return () => {
+      try { sub?.remove?.(); } catch (e) {}
+    };
+  }, []);
+
+  // Seed the route + available routes once the call audio session exists
+  // (startCallAudio runs inside acceptIncomingCall/startOutgoingCall, so it has
+  // happened by the time status leaves 'ringing'/'calling').
+  useEffect(() => {
+    if (status !== 'connecting' && status !== 'active') return;
+    try {
+      const routes = ExpoCallAudioModule.getAvailableRoutes?.();
+      if (Array.isArray(routes) && routes.length) setAvailableRoutes(routes);
+      const route = ExpoCallAudioModule.getAudioRoute?.();
+      if (route) setAudioRoute(route);
+    } catch (err) {
+      console.log('[CALL] WARNING - could not read audio route:', err?.message);
+    }
+  }, [status]);
+
   // Failsafe for the ring timeout. The server is authoritative and ends an
   // unanswered call for both sides at 60s via 'call:ended' - this only fires
   // if that event never reaches us (our socket silently dropped while
@@ -257,13 +291,18 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
 
   const handleToggleMute = () => setMuted(!!callManagerRef.current?.toggleMute());
   const handleToggleCamera = () => setCameraOff(!!callManagerRef.current?.toggleCamera());
-  const handleToggleSpeaker = () => {
-    const newValue = !speakerOn;
+
+  // Cycle to the next available route: bluetooth (if connected) -> earpiece ->
+  // speaker -> bluetooth... When no headset is connected it's just earpiece <-> speaker.
+  const cycleAudioRoute = () => {
+    const order = availableRoutes.length ? availableRoutes : ['earpiece', 'speaker'];
+    const idx = order.indexOf(audioRoute);
+    const next = order[(idx + 1) % order.length];
     try {
-      ExpoCallAudioModule.setSpeakerphoneOn(newValue);
-      setSpeakerOn(newValue);
+      ExpoCallAudioModule.setAudioRoute(next);
+      setAudioRoute(next); // optimistic; the onAudioRouteChanged event confirms
     } catch (err) {
-      console.log('[CALL] WARNING - setSpeakerphoneOn failed:', err.message);
+      console.log('[CALL] WARNING - setAudioRoute failed:', err?.message);
     }
   };
   const handleSwitchCamera = () => callManagerRef.current?.switchCamera();
@@ -271,6 +310,16 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
   const otherName = callInfo.mode === 'incoming' ? callInfo.fromName : callInfo.targetName;
   const isVideo = callInfo.callType === 'video';
   const showingRemoteVideo = isVideo && remoteStream && status === 'active' && remoteVideoTrackCount > 0;
+
+  const routeIcon =
+    audioRoute === 'bluetooth' ? 'bluetooth' :
+    audioRoute === 'speaker' ? 'volume-high-outline' :
+    'ear-outline';
+  const routeLabel =
+    audioRoute === 'bluetooth' ? 'Bluetooth' :
+    audioRoute === 'speaker' ? 'Speaker' :
+    'Earpiece';
+  const routeIconColor = audioRoute === 'bluetooth' ? '#4DA3FF' : '#fff';
 
   console.log('[CALL][RENDER] status:', status, '| isVideo:', isVideo, '| remoteStream exists:', !!remoteStream, '| remoteVideoTrackCount:', remoteVideoTrackCount, '| showingRemoteVideo:', showingRemoteVideo);
   const showControls = status !== 'ringing';
@@ -351,10 +400,10 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
               </View>
               {!isVideo && (
                 <View style={styles.controlColumn}>
-                  <TouchableOpacity style={styles.smallButton} onPress={handleToggleSpeaker}>
-                    <Ionicons name={speakerOn ? 'volume-high' : 'volume-medium'} size={22} color="#fff" />
+                  <TouchableOpacity style={styles.smallButton} onPress={cycleAudioRoute}>
+                    <Ionicons name={routeIcon} size={22} color={routeIconColor} />
                   </TouchableOpacity>
-                  <Text style={styles.controlLabel}>{speakerOn ? 'Speaker on' : 'Speaker off'}</Text>
+                  <Text style={styles.controlLabel}>{routeLabel}</Text>
                 </View>
               )}
               {isVideo && (

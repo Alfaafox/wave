@@ -1,12 +1,21 @@
-﻿export default {
-  startCallAudio(_isVideo: boolean) {
-    // No-op on web - call audio routing is a native-only concern.
+type AudioRoute = 'bluetooth' | 'earpiece' | 'speaker';
+
+// No-op on web - call audio routing is a native-only concern.
+export default {
+  startCallAudio(_isVideo: boolean) {},
+  stopCallAudio() {},
+  setSpeakerphoneOn(_enabled: boolean) {},
+  getAudioRoute(): AudioRoute {
+    return 'earpiece';
   },
-  stopCallAudio() {
-    // No-op on web.
+  getAvailableRoutes(): AudioRoute[] {
+    return ['earpiece', 'speaker'];
   },
-  setSpeakerphoneOn(_enabled: boolean) {
-    // No-op on web.
+  setAudioRoute(_route: AudioRoute) {},
+  addListener(
+    _eventName: 'onAudioRouteChanged',
+    _listener: (event: { route: AudioRoute }) => void
+  ) {
+    return { remove() {} };
   },
 };
-

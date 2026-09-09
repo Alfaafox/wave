@@ -21,7 +21,11 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "package": "com.mycompany.wave",
-      "googleServicesFile": "./google-services.json"
+      "googleServicesFile": "./google-services.json",
+      "permissions": [
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.BLUETOOTH_CONNECT"
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"

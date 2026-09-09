@@ -1,2 +1,6 @@
-<manifest>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <!-- Call-audio routing: MODE_IN_COMMUNICATION, speakerphone, Bluetooth SCO. -->
+  <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
+  <!-- API 31+: required to enumerate connected Bluetooth call-audio devices. -->
+  <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
 </manifest>
