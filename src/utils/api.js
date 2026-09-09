@@ -146,6 +146,27 @@ export function getStarredMessages(token, { limit = 20, offset = 0 } = {}) {
   });
 }
 
+// Pinned messages (max 3 per conversation, enforced server-side). pin/unpin
+// also broadcast pinnedMessage / unpinnedMessage over the conversation socket.
+export function pinMessage(token, conversationId, messageId) {
+  return request(`/conversations/${conversationId}/messages/${messageId}/pin`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` }
+  });
+}
+export function unpinMessage(token, conversationId, messageId) {
+  return request(`/conversations/${conversationId}/messages/${messageId}/unpin`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` }
+  });
+}
+export function getPinnedMessages(token, conversationId) {
+  return request(`/conversations/${conversationId}/pinned`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` }
+  });
+}
+
 export function getMessages(token, conversationId) {
   return request(`/conversations/${conversationId}/messages`, {
     method: 'GET',

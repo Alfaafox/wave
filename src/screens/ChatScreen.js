@@ -13,12 +13,13 @@ import {
   AudioModule, RecordingPresets, setAudioModeAsync,
   useAudioRecorder, useAudioRecorderState, useAudioPlayer, useAudioPlayerStatus
 } from 'expo-audio';
-import { getMessages, getConversations, setConversationMute, setPrivateChat, searchMessages, starMessage, unstarMessage, SERVER_URL } from '../utils/api';
+import { getMessages, getConversations, setConversationMute, setPrivateChat, searchMessages, starMessage, unstarMessage, pinMessage, unpinMessage, getPinnedMessages, SERVER_URL } from '../utils/api';
 import { connectSocket } from '../utils/socket';
 import { ReactionPicker, ReactionPills } from '../components/MessageReactions';
 import MediaPickerSheet from '../components/MediaPickerSheet';
 import ImageViewerModal from '../components/ImageViewerModal';
 import UserProfileModal from '../components/UserProfileModal';
+import PinnedMessagesModal from '../components/PinnedMessagesModal';
 import ContactNotificationSettings from './ContactNotificationSettings';
 import SharedMediaScreen from './SharedMediaScreen';
 import TypingIndicator from '../components/TypingIndicator';
@@ -36,6 +37,14 @@ const SWIPE_THRESHOLD = 60;  // release past this fires the reply
 function truncate(text, max) {
   const s = (text || '').replace(/\s+/g, ' ').trim();
   return s.length > max ? `${s.slice(0, max)}...` : s;
+}
+
+// One-line preview for a pinned message (bar + modal).
+function pinSnippet(p) {
+  if (!p) return '';
+  if (p.message_type === 'image') return 'Photo';
+  if (p.message_type === 'audio') return 'Voice message';
+  return (p.content || '').replace(/\s+/g, ' ').trim() || 'Message';
 }
 
 // Wraps one message bubble with a right-swipe-to-reply gesture. Detection is a
@@ -158,6 +167,13 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
   const [notifSettingsOpen, setNotifSettingsOpen] = useState(false);
   const [sharedMediaOpen, setSharedMediaOpen] = useState(false);
   const [contactMuted, setContactMuted] = useState(false);
+  // Pinned messages for this conversation (max 3, server-enforced). Seeded
+  // from GET /conversations/:id/pinned on mount, kept live by the
+  // pinnedMessage / unpinnedMessage socket events. `hidePinBar` dismisses the
+  // bar for this screen session only (does NOT unpin).
+  const [pinnedMessages, setPinnedMessages] = useState([]);
+  const [hidePinBar, setHidePinBar] = useState(false);
+  const [pinnedModalOpen, setPinnedModalOpen] = useState(false);
   // Private Chat mode for this conversation (server-backed, on conversations
   // .private_chat). Seeded from GET /conversations on mount, kept live by the
   // privateChatEnabled / privateChatDisabled socket events. 1:1 only.
@@ -283,10 +299,16 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
 
   useEffect(() => {
     let isMounted = true;
+    setHidePinBar(false); // a re-hidden bar shouldn't stay hidden in a new chat
+    setPinnedModalOpen(false);
 
     getMessages(token, conversationId).then((data) => {
       if (isMounted) setMessages(data);
     });
+
+    getPinnedMessages(token, conversationId)
+      .then((data) => { if (isMounted) setPinnedMessages(Array.isArray(data?.pins) ? data.pins : []); })
+      .catch(() => { if (isMounted) setPinnedMessages([]); });
 
     // Seed Private Chat state (1:1 only). GET /conversations is the same call
     // UserProfileModal makes; the privateChat* socket events keep it live.
@@ -391,6 +413,16 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     const handlePrivateChatOff = ({ conversationId: cid }) => {
       if (String(cid) === String(conversationId)) setPrivateChatState(false);
     };
+    const handlePinned = ({ conversationId: cid, pin }) => {
+      if (String(cid) !== String(conversationId) || !pin) return;
+      setPinnedMessages((prev) => (
+        prev.some((p) => p.message_id === pin.message_id) ? prev : [pin, ...prev]
+      ));
+    };
+    const handleUnpinned = ({ conversationId: cid, messageId }) => {
+      if (String(cid) !== String(conversationId)) return;
+      setPinnedMessages((prev) => prev.filter((p) => p.message_id !== messageId));
+    };
 
     socket.on('message', handleMessage);
     socket.on('reactionUpdate', handleReactionUpdate);
@@ -403,6 +435,8 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     socket.on('messageDeletedForEveryone', handleDeletedForEveryone);
     socket.on('privateChatEnabled', handlePrivateChatOn);
     socket.on('privateChatDisabled', handlePrivateChatOff);
+    socket.on('pinnedMessage', handlePinned);
+    socket.on('unpinnedMessage', handleUnpinned);
 
     return () => {
       isMounted = false;
@@ -417,6 +451,8 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
       socket.off('reactionUpdate', handleReactionUpdate);
       socket.off('privateChatEnabled', handlePrivateChatOn);
       socket.off('privateChatDisabled', handlePrivateChatOff);
+      socket.off('pinnedMessage', handlePinned);
+      socket.off('unpinnedMessage', handleUnpinned);
       clearTimeout(typingTimeoutRef.current);
       clearTimeout(searchDebounceRef.current);
       // Leaving the chat (unmount) - tell the other side we're done typing,
@@ -673,6 +709,78 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
       Alert.alert('Could not update', err.message);
     });
   };
+
+  const isMessagePinned = (item) => pinnedMessages.some((p) => p.message_id === item?.id);
+
+  const handleTogglePin = () => {
+    const msg = actionMenuFor;
+    closeActionMenu();
+    if (!msg) return;
+    const currentlyPinned = isMessagePinned(msg);
+
+    if (!currentlyPinned && pinnedMessages.length >= 3) {
+      Alert.alert('Maximum 3 messages can be pinned', 'Unpin one first to pin this message.');
+      return;
+    }
+
+    if (currentlyPinned) {
+      const removed = pinnedMessages.find((p) => p.message_id === msg.id);
+      setPinnedMessages((prev) => prev.filter((p) => p.message_id !== msg.id));
+      unpinMessage(token, conversationId, msg.id).catch((err) => {
+        if (removed) setPinnedMessages((prev) => (prev.some((p) => p.message_id === msg.id) ? prev : [removed, ...prev]));
+        Alert.alert('Could not unpin', err.message);
+      });
+      return;
+    }
+
+    // Optimistic pin with a placeholder row; the API response (and the
+    // pinnedMessage socket event) replace it with the real pin.
+    const optimistic = {
+      id: `tmp-${msg.id}`,
+      message_id: msg.id,
+      content: msg.content,
+      message_type: msg.message_type,
+      sender_name: msg.username,
+      sender_id: msg.user_id,
+      pinned_by: currentUser.id,
+      pinned_at: new Date().toISOString(),
+    };
+    setPinnedMessages((prev) => [optimistic, ...prev]);
+    pinMessage(token, conversationId, msg.id)
+      .then((res) => {
+        if (res?.pin) {
+          setPinnedMessages((prev) => {
+            const without = prev.filter((p) => p.message_id !== msg.id);
+            return without.some((p) => p.message_id === msg.id) ? without : [res.pin, ...without];
+          });
+        }
+      })
+      .catch((err) => {
+        setPinnedMessages((prev) => prev.filter((p) => p.message_id !== msg.id));
+        Alert.alert(
+          /maximum 3/i.test(err.message || '') ? 'Maximum 3 messages can be pinned' : 'Could not pin',
+          /maximum 3/i.test(err.message || '') ? 'Unpin one first to pin this message.' : err.message
+        );
+      });
+  };
+
+  const handleUnpinFromModal = (pin) => {
+    if (!pin) return;
+    setPinnedMessages((prev) => prev.filter((p) => p.message_id !== pin.message_id));
+    unpinMessage(token, conversationId, pin.message_id).catch((err) => {
+      setPinnedMessages((prev) => (prev.some((p) => p.message_id === pin.message_id) ? prev : [pin, ...prev]));
+      Alert.alert('Could not unpin', err.message);
+    });
+  };
+
+  const jumpToPinned = (messageId) => {
+    if (scrollToMessageId(messageId)) flashHighlight(messageId);
+  };
+
+  // Close the "all pinned messages" sheet once it no longer has >= 2 to show.
+  useEffect(() => {
+    if (pinnedModalOpen && pinnedMessages.length < 2) setPinnedModalOpen(false);
+  }, [pinnedModalOpen, pinnedMessages.length]);
 
   const handleEdit = () => {
     const msg = actionMenuFor;
@@ -1083,6 +1191,43 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
           </>
         )}
       </View>
+
+      {!searchMode && !hidePinBar && pinnedMessages.length > 0 && (
+        <TouchableOpacity
+          style={styles.pinBar}
+          activeOpacity={0.7}
+          onPress={() => {
+            if (pinnedMessages.length === 1) jumpToPinned(pinnedMessages[0].message_id);
+            else setPinnedModalOpen(true);
+          }}
+        >
+          <Ionicons name="pin" size={16} color={colors.accent} style={styles.pinBarIcon} />
+          <View style={{ flex: 1 }}>
+            {pinnedMessages.length === 1 ? (
+              <>
+                <Text style={styles.pinBarSender} numberOfLines={1}>
+                  {pinnedMessages[0].sender_name || 'Pinned message'}
+                </Text>
+                <Text style={styles.pinBarText} numberOfLines={1}>{pinSnippet(pinnedMessages[0])}</Text>
+              </>
+            ) : (
+              <Text style={styles.pinBarText} numberOfLines={1}>
+                {pinnedMessages.length} pinned messages
+              </Text>
+            )}
+          </View>
+          {pinnedMessages.length > 1 && (
+            <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+          )}
+          <TouchableOpacity
+            onPress={() => setHidePinBar(true)}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            style={styles.pinBarClose}
+          >
+            <Ionicons name="close" size={18} color={colors.textMuted} />
+          </TouchableOpacity>
+        </TouchableOpacity>
+      )}
 
       {searchMode && resultsCollapsed && searchResults.length > 0 && (
         <View style={styles.searchNavBar}>
@@ -1504,6 +1649,19 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
                 </View>
               </TouchableOpacity>
             )}
+            {actionMenuFor && (
+              <TouchableOpacity style={styles.actionItem} onPress={handleTogglePin}>
+                <View style={styles.actionItemRow}>
+                  <Ionicons
+                    name={isMessagePinned(actionMenuFor) ? 'pin' : 'pin-outline'}
+                    size={17}
+                    color={isMessagePinned(actionMenuFor) ? colors.accent : colors.textPrimary}
+                    style={{ marginRight: 10 }}
+                  />
+                  <Text style={styles.actionText}>{isMessagePinned(actionMenuFor) ? 'Unpin' : 'Pin'}</Text>
+                </View>
+              </TouchableOpacity>
+            )}
             {actionMenuFor?.message_type === 'image' && (
               <TouchableOpacity style={styles.actionItem} onPress={() => { const msg = actionMenuFor; closeActionMenu(); saveImage(msg.content); }}>
                 <Text style={styles.actionText}>Save to Gallery</Text>
@@ -1618,6 +1776,14 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
           />
         </View>
       )}
+
+      <PinnedMessagesModal
+        visible={pinnedModalOpen}
+        pins={pinnedMessages}
+        onClose={() => setPinnedModalOpen(false)}
+        onJumpTo={jumpToPinned}
+        onUnpin={handleUnpinFromModal}
+      />
     </KeyboardAvoidingView>
   );
 }
@@ -1655,6 +1821,18 @@ const styles = StyleSheet.create({
   },
   searchNavText: { fontSize: 13, color: colors.textSecondary, fontWeight: '600' },
   searchNavBtn: { padding: 6, marginLeft: 2 },
+
+  // Pinned-messages bar: below the header, above the message list.
+  pinBar: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: spacing.lg, paddingVertical: spacing.sm,
+    backgroundColor: colors.surface,
+    borderBottomWidth: 1, borderBottomColor: colors.border,
+  },
+  pinBarIcon: { marginRight: spacing.sm },
+  pinBarSender: { fontSize: 12, fontWeight: '700', color: colors.accent },
+  pinBarText: { fontSize: 13, color: colors.textSecondary },
+  pinBarClose: { marginLeft: spacing.sm, padding: 2 },
 
   searchOverlay: {
     position: 'absolute', left: 0, right: 0, bottom: 0,
