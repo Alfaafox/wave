@@ -1,56 +1,27 @@
 import React, { useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Image, Alert, ActivityIndicator } from 'react-native';
-import * as ImagePicker from 'expo-image-picker';
-import { updateProfilePicture } from '../utils/api';
 import { colors, spacing, radii, shadow } from '../theme';
 import { Ionicons } from '@expo/vector-icons';
 import ImageViewerModal from '../components/ImageViewerModal';
 
-export default function ProfileScreen({ token, currentUser, onBack, onLogout, onProfilePictureUpdated }) {
+export default function ProfileScreen({ token, currentUser, onBack, onLogout, onChangeProfilePicture }) {
   const [uploading, setUploading] = useState(false);
-  const [localPicture, setLocalPicture] = useState(currentUser?.profilePicture || null);
   const [viewerOpen, setViewerOpen] = useState(false);
 
+  // Displayed picture comes straight from currentUser: App.js owns the picker
+  // + upload and pushes the new data URI down through that prop.
+  const picture = currentUser?.profilePicture || null;
+
+  // The actual expo-image-picker call lives at the App.js level, NOT here.
+  // On Android (New Architecture) ImagePicker.launchImageLibraryAsync throws
+  // "ActivityResultLauncher not registered" when invoked from a component that
+  // is mounted inside a <Modal> tree. Delegating to App.js keeps the call out
+  // of any Modal context. We only drive the local spinner.
   const changePicture = async () => {
+    if (uploading) return;
+    setUploading(true);
     try {
-      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (!permission.granted) {
-        Alert.alert('Permission needed', 'We need access to your photos.');
-        return;
-      }
-      // Gallery only - no launchCameraAsync here. `allowsEditing: true` is
-      // expo-image-picker's built-in crop UI (shown after selection, before
-      // this resolves), so no separate crop library is needed. `quality: 1`
-      // keeps the full-size cropped original - not a downscaled thumbnail.
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ['images'],
-        allowsEditing: true,
-        aspect: [1, 1],
-        quality: 1,
-        base64: true,
-      });
-      if (result.canceled) return;
-
-      const asset = result.assets?.[0];
-      if (!asset?.base64) {
-        Alert.alert('Error', 'Could not read the selected image.');
-        return;
-      }
-
-      // The backend stores the data URI verbatim in a TEXT column and the
-      // REST JSON body limit is 8 MB. Reject oversized images up front with a
-      // clear message instead of letting the request fail cryptically.
-      if (asset.base64.length > 7 * 1024 * 1024) {
-        Alert.alert('Photo too large', 'That image is too big. Please pick a smaller one.');
-        return;
-      }
-
-      const dataUri = `data:image/jpeg;base64,${asset.base64}`;
-      setUploading(true);
-      await updateProfilePicture(token, dataUri);
-      setLocalPicture(dataUri);
-      onProfilePictureUpdated?.(dataUri);
-      Alert.alert('Updated', 'Profile picture updated.');
+      await onChangeProfilePicture?.();
     } catch (err) {
       Alert.alert('Error', err.message);
     } finally {
@@ -61,7 +32,7 @@ export default function ProfileScreen({ token, currentUser, onBack, onLogout, on
   // Tapping the avatar views it full-screen; if there's no photo yet, fall
   // through to the picker so the avatar is still a way to add one.
   const handleAvatarPress = () => {
-    if (localPicture) setViewerOpen(true);
+    if (picture) setViewerOpen(true);
     else changePicture();
   };
 
@@ -76,8 +47,8 @@ export default function ProfileScreen({ token, currentUser, onBack, onLogout, on
 
       <View style={styles.avatarWrap}>
         <TouchableOpacity onPress={handleAvatarPress} disabled={uploading} activeOpacity={0.8}>
-          {localPicture ? (
-            <Image source={{ uri: localPicture }} style={styles.avatarImage} />
+          {picture ? (
+            <Image source={{ uri: picture }} style={styles.avatarImage} />
           ) : (
             <View style={styles.avatar}>
               <Text style={styles.avatarText}>
@@ -123,8 +94,8 @@ export default function ProfileScreen({ token, currentUser, onBack, onLogout, on
       </TouchableOpacity>
 
       <ImageViewerModal
-        visible={viewerOpen && !!localPicture}
-        uri={localPicture}
+        visible={viewerOpen && !!picture}
+        uri={picture}
         onClose={() => setViewerOpen(false)}
       />
     </View>

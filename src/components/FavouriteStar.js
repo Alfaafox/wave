@@ -4,40 +4,33 @@
 // be lifted / persisted); this component only renders it and plays the tap
 // animation:
 //   - the star scales 1.0 -> 1.4 -> 1.0 (spring back)
-//   - its colour interpolates between grey (colors.textMuted) and gold
+//   - the colour swaps instantly between grey and gold (see note below)
 //   - a short burst of small gold dots flies outward and fades
 //
 // Uses React Native's own Animated API (the same one CallScreen.js and
-// ImageViewerModal.js use) - no reanimated, no native deps. The colour
-// interpolation runs on the JS driver (useNativeDriver: false); the scale
-// and the particles run on the native driver. They are separate Animated
-// values on separate views, so the drivers never collide.
+// ImageViewerModal.js use) - no reanimated, no native deps.
+//
+// IMPORTANT: the Ionicons element is completely static - its `color` prop is
+// always a plain string, never an Animated.Value or an interpolated value.
+// Driving an Ionicons colour prop with Animated interpolation crashes on the
+// New Architecture ("undefined is not a function" in createIconSet.js) because
+// react-native-vector-icons pushes the update through setNativeProps, which the
+// Fabric host view does not implement. Only the wrapping Animated.View's
+// transform scale is animated.
 
-import React, { useEffect, useRef } from 'react';
+import React, { useRef } from 'react';
 import { Animated, Easing, Pressable, View, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { colors } from '../theme';
 
 const GOLD = '#FFD700'; // explicit per spec - not a theme token
+const GREY = '#999999'; // instant "not starred" colour - no interpolation
 const PARTICLE_COUNT = 8;
-const AnimatedIonicons = Animated.createAnimatedComponent(Ionicons);
 
 export default function FavouriteStar({ filled, onToggle, size = 26, disabled = false, style }) {
   const scale = useRef(new Animated.Value(1)).current;
-  const colorT = useRef(new Animated.Value(filled ? 1 : 0)).current;
   const particles = useRef(
     Array.from({ length: PARTICLE_COUNT }, () => new Animated.Value(0))
   ).current;
-
-  // Keep the resting colour in sync if `filled` changes from the outside
-  // (e.g. loaded from storage) without a tap.
-  useEffect(() => {
-    Animated.timing(colorT, {
-      toValue: filled ? 1 : 0,
-      duration: 200,
-      useNativeDriver: false,
-    }).start();
-  }, [filled, colorT]);
 
   const handlePress = () => {
     if (disabled) return;
@@ -76,11 +69,6 @@ export default function FavouriteStar({ filled, onToggle, size = 26, disabled = 
     ).start();
   };
 
-  const animatedColor = colorT.interpolate({
-    inputRange: [0, 1],
-    outputRange: [colors.textMuted, GOLD],
-  });
-
   return (
     <Pressable onPress={handlePress} hitSlop={12} disabled={disabled} style={style}>
       <View style={styles.wrap}>
@@ -106,10 +94,10 @@ export default function FavouriteStar({ filled, onToggle, size = 26, disabled = 
           );
         })}
         <Animated.View style={{ transform: [{ scale }] }}>
-          <AnimatedIonicons
+          <Ionicons
             name={filled ? 'star' : 'star-outline'}
             size={size}
-            style={{ color: animatedColor }}
+            color={filled ? GOLD : GREY}
           />
         </Animated.View>
       </View>

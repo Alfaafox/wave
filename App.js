@@ -4,6 +4,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { StatusBar } from 'expo-status-bar';
 import { KeyboardProvider } from 'react-native-keyboard-controller';
 import * as Notifications from 'expo-notifications';
+import * as ImagePicker from 'expo-image-picker';
 
 import LoginScreen from './src/screens/LoginScreen';
 import SignupScreen from './src/screens/SignupScreen';
@@ -25,7 +26,7 @@ import InviteFriendScreen from './src/screens/InviteFriendScreen';
 import NotificationBanner from './src/components/NotificationBanner';
 import { colors } from './src/theme';
 import { disconnectSocket, connectSocket } from './src/utils/socket';
-import { getCurrentUser, getConversations } from './src/utils/api';
+import { getCurrentUser, getConversations, updateProfilePicture } from './src/utils/api';
 import {
   getPermissionStatus,
   hasAskedPermission,
@@ -215,11 +216,50 @@ export default function App() {
     setScreen('chatList');
   };
 
-  const handleProfilePictureUpdated = async (dataUri) => {
-    const updatedUser = { ...currentUser, profilePicture: dataUri };
-    setCurrentUser(updatedUser);
-    await AsyncStorage.setItem('user', JSON.stringify(updatedUser));
-  };
+  // The profile-picture picker runs HERE, at the App.js level, and never from
+  // inside a Modal. expo-image-picker's launchImageLibraryAsync throws
+  // "ActivityResultLauncher not registered" on Android (New Architecture) when
+  // it is called from a component mounted inside a <Modal> tree. ProfileScreen
+  // calls this through the onChangeProfilePicture prop and only manages its
+  // own spinner. Errors propagate so ProfileScreen can surface them.
+  const handleChangeProfilePicture = useCallback(async () => {
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert('Permission needed', 'We need access to your photos.');
+      return;
+    }
+    // Gallery only. `allowsEditing: true` is expo-image-picker's built-in crop
+    // UI; `quality: 1` keeps the full-size cropped original.
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 1,
+      base64: true,
+    });
+    if (result.canceled) return;
+
+    const asset = result.assets?.[0];
+    if (!asset?.base64) {
+      Alert.alert('Error', 'Could not read the selected image.');
+      return;
+    }
+    // Backend stores the data URI verbatim in a TEXT column; the REST JSON body
+    // limit is 8 MB. Reject oversized images up front.
+    if (asset.base64.length > 7 * 1024 * 1024) {
+      Alert.alert('Photo too large', 'That image is too big. Please pick a smaller one.');
+      return;
+    }
+
+    const dataUri = `data:image/jpeg;base64,${asset.base64}`;
+    await updateProfilePicture(token, dataUri);
+    setCurrentUser((prev) => {
+      const updated = { ...prev, profilePicture: dataUri };
+      AsyncStorage.setItem('user', JSON.stringify(updated));
+      return updated;
+    });
+    Alert.alert('Updated', 'Profile picture updated.');
+  }, [token]);
 
   const openSettingsSection = (key) => {
     const map = {
@@ -436,7 +476,7 @@ export default function App() {
               currentUser={currentUser}
               onBack={() => setScreen('settings')}
               onLogout={handleLogout}
-              onProfilePictureUpdated={handleProfilePictureUpdated}
+              onChangeProfilePicture={handleChangeProfilePicture}
             />
           )}
           {screen === 'settings' && (

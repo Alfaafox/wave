@@ -26,7 +26,8 @@ import FavouriteStar from './FavouriteStar';
 import ImageViewerModal from './ImageViewerModal';
 
 const SCREEN_HEIGHT = Dimensions.get('window').height;
-const DISMISS_THRESHOLD = 110;
+// Drag the handle down more than this many px and the sheet closes.
+const DISMISS_THRESHOLD = 50;
 
 function initials(name) {
   return (name || '?').trim().charAt(0).toUpperCase() || '?';
@@ -137,15 +138,20 @@ export default function UserProfileModal({
     return () => { cancelled = true; };
   }, [visible, isGroup, otherId, conversationId, token, translateY]);
 
+  // The drag handle owns the touch outright (onStart/onMove both return true)
+  // so nothing - not the backdrop Pressable, not the ScrollView below - can
+  // consume the gesture before we see it. A downward drag past
+  // DISMISS_THRESHOLD (50px) closes the sheet; anything less springs back.
   const panResponder = useMemo(
     () =>
       PanResponder.create({
-        onMoveShouldSetPanResponder: (_, g) => g.dy > 6 && Math.abs(g.dy) > Math.abs(g.dx),
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: () => true,
         onPanResponderMove: (_, g) => {
           if (g.dy > 0) translateY.setValue(g.dy);
         },
-        onPanResponderRelease: (_, g) => {
-          if (g.dy > DISMISS_THRESHOLD) {
+        onPanResponderRelease: (e, gs) => {
+          if (gs.dy > DISMISS_THRESHOLD) {
             Animated.timing(translateY, { toValue: SCREEN_HEIGHT, duration: 180, useNativeDriver: true })
               .start(() => onCloseRef.current()); // translateY is reset by the visible effect on reopen
           } else {
@@ -430,7 +436,13 @@ const styles = StyleSheet.create({
     maxHeight: '88%',
     paddingBottom: spacing.xl,
   },
-  handleArea: { alignItems: 'center', paddingTop: spacing.sm, paddingBottom: spacing.xs },
+  handleArea: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 44, // keep the draggable target at least 44px tall
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.xs,
+  },
   handle: { width: 40, height: 5, borderRadius: radii.pill, backgroundColor: colors.border },
   sheetContent: { paddingHorizontal: spacing.lg, paddingTop: spacing.sm },
 
