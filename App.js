@@ -24,6 +24,7 @@ import AppearanceSettingsScreen from './src/screens/AppearanceSettingsScreen';
 import NotificationsSettingsScreen from './src/screens/NotificationsSettingsScreen';
 import InviteFriendScreen from './src/screens/InviteFriendScreen';
 import StarredMessagesScreen from './src/screens/StarredMessagesScreen';
+import ArchivedChatsScreen from './src/screens/ArchivedChatsScreen';
 import NotificationBanner from './src/components/NotificationBanner';
 import { colors } from './src/theme';
 import { disconnectSocket, connectSocket } from './src/utils/socket';
@@ -451,11 +452,20 @@ export default function App() {
               onLogout={handleLogout}
               onOpenProfile={() => setScreen('settings')}
               onOpenStarred={() => setScreen('starredMessages')}
+              onOpenArchived={() => setScreen('archivedChats')}
             />
           )}
           {screen === 'starredMessages' && (
             <StarredMessagesScreen
               token={token}
+              onBack={() => setScreen('chatList')}
+              onOpenChat={openChat}
+            />
+          )}
+          {screen === 'archivedChats' && (
+            <ArchivedChatsScreen
+              token={token}
+              presenceMap={presenceMap}
               onBack={() => setScreen('chatList')}
               onOpenChat={openChat}
             />

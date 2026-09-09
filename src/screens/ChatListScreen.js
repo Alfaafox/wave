@@ -3,21 +3,18 @@ import {
   View, Text, FlatList, TouchableOpacity, StyleSheet,
   TextInput, Modal, Alert, RefreshControl, Image, ScrollView
 } from 'react-native';
-import { getConversations, startConversation, createGroup, deleteConversation, markAllConversationsRead } from '../utils/api';
+import {
+  getConversations, startConversation, createGroup, deleteConversation,
+  markAllConversationsRead, archiveConversation, getArchivedConversations,
+} from '../utils/api';
 import { connectSocket } from '../utils/socket';
 import { colors, spacing, radii, typography, shadow } from '../theme';
 import ContactPickerScreen from './ContactPickerScreen';
+import ConversationRow from '../components/ConversationRow';
 import { Ionicons } from '@expo/vector-icons';
 import { getFavourites } from '../utils/favourites';
 
-function previewText(lastMessage) {
-  if (!lastMessage) return 'No messages yet';
-  if (lastMessage.message_type === 'image') return 'Photo';
-  if (lastMessage.message_type === 'audio') return 'Voice message';
-  return lastMessage.content;
-}
-
-export default function ChatListScreen({ token, currentUser, presenceMap, onOpenChat, onLogout, onOpenProfile, onOpenStarred }) {
+export default function ChatListScreen({ token, currentUser, presenceMap, onOpenChat, onLogout, onOpenProfile, onOpenStarred, onOpenArchived }) {
   const [conversations, setConversations] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
   const [starting, setStarting] = useState(false);
@@ -29,6 +26,7 @@ export default function ChatListScreen({ token, currentUser, presenceMap, onOpen
   const [groupNamingFor, setGroupNamingFor] = useState(null);
   const [groupNameInput, setGroupNameInput] = useState('');
   const [favouriteIds, setFavouriteIds] = useState([]);
+  const [archivedCount, setArchivedCount] = useState(0);
 
   const loadFavourites = useCallback(() => {
     getFavourites().then(setFavouriteIds).catch(() => {});
@@ -43,31 +41,77 @@ export default function ChatListScreen({ token, currentUser, presenceMap, onOpen
     }
   }, [token]);
 
+  // The archived count drives the "Archived" row at the bottom of the list.
+  // Re-read it whenever an archive/unarchive happens (locally or via socket).
+  const refreshArchivedCount = useCallback(() => {
+    getArchivedConversations(token)
+      .then((list) => setArchivedCount(Array.isArray(list) ? list.length : 0))
+      .catch(() => {});
+  }, [token]);
+
   useEffect(() => {
     loadConversations();
     loadFavourites();
+    refreshArchivedCount();
     const socket = connectSocket(token);
     // Presence (online dots) is owned by App.js via `presenceMap` - see there.
     const refreshOnActivity = () => loadConversations();
+    const handleArchived = ({ conversationId }) => {
+      setConversations((prev) => prev.filter((c) => c.id !== conversationId));
+      refreshArchivedCount();
+    };
+    const handleUnarchived = () => {
+      // The conversation (and its latest message) come back via a full refetch.
+      loadConversations();
+      refreshArchivedCount();
+    };
 
     socket.on('message', refreshOnActivity);
     socket.on('read', refreshOnActivity);
     socket.on('delivered', refreshOnActivity);
     socket.on('conversationActivity', refreshOnActivity);
+    socket.on('conversationArchived', handleArchived);
+    socket.on('conversationUnarchived', handleUnarchived);
 
     return () => {
       socket.off('message', refreshOnActivity);
       socket.off('read', refreshOnActivity);
       socket.off('delivered', refreshOnActivity);
       socket.off('conversationActivity', refreshOnActivity);
+      socket.off('conversationArchived', handleArchived);
+      socket.off('conversationUnarchived', handleUnarchived);
     };
-  }, [loadConversations, loadFavourites, token]);
+  }, [loadConversations, loadFavourites, refreshArchivedCount, token]);
 
   const handleRefresh = async () => {
     setRefreshing(true);
     loadFavourites();
+    refreshArchivedCount();
     await loadConversations();
     setRefreshing(false);
+  };
+
+  const handleArchive = async (item) => {
+    const prev = conversations;
+    setConversations((cur) => cur.filter((c) => c.id !== item.id));
+    setArchivedCount((n) => n + 1);
+    try {
+      await archiveConversation(token, item.id);
+      refreshArchivedCount();
+    } catch (err) {
+      setConversations(prev);
+      refreshArchivedCount();
+      Alert.alert('Could not archive', err.message);
+    }
+  };
+
+  const handleRowLongPress = (item) => {
+    const title = item.is_group ? item.name : item.with?.name;
+    Alert.alert(title || 'Chat', undefined, [
+      { text: 'Archive', onPress: () => handleArchive(item) },
+      { text: 'Delete chat', style: 'destructive', onPress: () => handleDeleteChat(item) },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
   };
 
   // Header overflow menu. New Group and Settings reuse the exact handlers the
@@ -285,58 +329,30 @@ export default function ChatListScreen({ token, currentUser, presenceMap, onOpen
             {searchQuery ? 'No chats match your search' : 'No chats yet. Tap + to start one.'}
           </Text>
         }
-        renderItem={({ item }) => {
-          const isGroup = !!item.is_group;
-          const title = isGroup ? item.name : item.with?.name;
-          const online = !isGroup && item.with?.id != null && !!presenceMap?.get(item.with.id)?.online;
-          const hasUnread = item.unreadCount > 0;
-
-          return (
-            <TouchableOpacity
-              activeOpacity={0.6}
-              style={styles.row}
-              onPress={() => onOpenChat({
-                conversationId: item.id,
-                otherUser: item.with,
-                isGroup,
-                groupName: item.name
-              })}
-              onLongPress={() => handleDeleteChat(item)}
-            >
-              <View>
-                <View style={styles.avatar}>
-                  <Text style={styles.avatarText}>{(title || '?').charAt(0).toUpperCase()}</Text>
-                </View>
-                {online && <View style={styles.onlineDot} />}
-              </View>
-              <View style={{ flex: 1, marginLeft: spacing.md }}>
-                <View style={styles.rowTopLine}>
-                  <Text style={styles.rowName} numberOfLines={1}>{title || 'Chat'}</Text>
-                  {item.lastMessage?.created_at && (
-                    <Text style={styles.rowTime}>
-                      {new Date(item.lastMessage.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                    </Text>
-                  )}
-                </View>
-                <View style={styles.rowBottomLine}>
-                  <Text
-                    style={[styles.rowSub, hasUnread && styles.rowSubUnread]}
-                    numberOfLines={1}
-                  >
-                    {previewText(item.lastMessage)}
-                  </Text>
-                  {hasUnread && (
-                    <View style={styles.unreadBadge}>
-                      <Text style={styles.unreadBadgeText}>
-                        {item.unreadCount > 99 ? '99+' : item.unreadCount}
-                      </Text>
-                    </View>
-                  )}
-                </View>
+        ListFooterComponent={
+          !searchQuery && archivedCount > 0 ? (
+            <TouchableOpacity style={styles.archivedRow} activeOpacity={0.6} onPress={onOpenArchived}>
+              <Ionicons name="archive-outline" size={18} color={colors.textMuted} style={styles.archivedIcon} />
+              <Text style={styles.archivedLabel}>Archived</Text>
+              <View style={styles.archivedBadge}>
+                <Text style={styles.archivedBadgeText}>{archivedCount}</Text>
               </View>
             </TouchableOpacity>
-          );
-        }}
+          ) : null
+        }
+        renderItem={({ item }) => (
+          <ConversationRow
+            item={item}
+            presenceMap={presenceMap}
+            onPress={() => onOpenChat({
+              conversationId: item.id,
+              otherUser: item.with,
+              isGroup: !!item.is_group,
+              groupName: item.name,
+            })}
+            onLongPress={() => handleRowLongPress(item)}
+          />
+        )}
       />
 
       <TouchableOpacity style={styles.fab} onPress={() => setComposeOpen(true)} activeOpacity={0.85}>
@@ -358,10 +374,7 @@ export default function ChatListScreen({ token, currentUser, presenceMap, onOpen
               <Ionicons name="star-outline" size={18} color={colors.textPrimary} />
               <Text style={styles.menuItemText}>Starred Messages</Text>
             </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.menuItem}
-              onPress={menuAction(() => Alert.alert('Coming soon - Archived Chats'))}
-            >
+            <TouchableOpacity style={styles.menuItem} onPress={menuAction(onOpenArchived)}>
               <Ionicons name="archive-outline" size={18} color={colors.textPrimary} />
               <Text style={styles.menuItemText}>Archived</Text>
             </TouchableOpacity>
@@ -463,32 +476,20 @@ const styles = StyleSheet.create({
 
   empty: { textAlign: 'center', marginTop: 60, color: colors.textMuted },
 
-  row: {
+  // "Archived" row pinned to the bottom of the main list (footer).
+  archivedRow: {
     flexDirection: 'row', alignItems: 'center',
-    paddingVertical: spacing.md, paddingHorizontal: spacing.lg
+    paddingVertical: spacing.md, paddingHorizontal: spacing.lg,
+    borderTopWidth: 1, borderTopColor: colors.divider,
+    backgroundColor: colors.surface,
   },
-  avatar: {
-    width: 52, height: 52, borderRadius: 26, backgroundColor: colors.accent,
-    justifyContent: 'center', alignItems: 'center'
+  archivedIcon: { marginRight: spacing.md },
+  archivedLabel: { flex: 1, fontSize: 15, color: colors.textSecondary, fontWeight: '600' },
+  archivedBadge: {
+    backgroundColor: colors.border, borderRadius: radii.pill, minWidth: 20, height: 20,
+    justifyContent: 'center', alignItems: 'center', paddingHorizontal: 6,
   },
-  avatarText: { color: colors.textOnAccent, fontSize: 20, fontWeight: '600' },
-  onlineDot: {
-    // 10px green circle, 2px white ring, bottom-right of the avatar. Nothing
-    // rendered at all when offline (no grey dot).
-    position: 'absolute', bottom: 0, right: 0, width: 10, height: 10,
-    borderRadius: 5, backgroundColor: '#4CAF50', borderWidth: 2, borderColor: '#FFFFFF'
-  },
-  rowTopLine: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  rowName: { ...typography.rowName, color: colors.textPrimary, flex: 1, marginRight: spacing.sm },
-  rowTime: { ...typography.timestamp, color: colors.textMuted },
-  rowBottomLine: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 },
-  rowSub: { ...typography.rowPreview, color: colors.textSecondary, flex: 1, marginRight: spacing.sm },
-  rowSubUnread: { color: colors.textPrimary, fontWeight: '600' },
-  unreadBadge: {
-    backgroundColor: colors.unreadBadge, borderRadius: radii.pill, minWidth: 20, height: 20,
-    justifyContent: 'center', alignItems: 'center', paddingHorizontal: 6
-  },
-  unreadBadgeText: { color: colors.textOnAccent, fontSize: 11, fontWeight: '700' },
+  archivedBadgeText: { color: colors.textSecondary, fontSize: 11, fontWeight: '700' },
 
   fab: {
     position: 'absolute', bottom: 28, right: 20, width: 56, height: 56,

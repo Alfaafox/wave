@@ -146,6 +146,28 @@ export function getStarredMessages(token, { limit = 20, offset = 0 } = {}) {
   });
 }
 
+// Archived chats (per-user, conversation_members.archived). Archiving hides a
+// conversation from GET /conversations and surfaces it in
+// GET /conversations/archived; a new message auto-unarchives it server-side.
+export function archiveConversation(token, conversationId) {
+  return request(`/conversations/${conversationId}/archive`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` }
+  });
+}
+export function unarchiveConversation(token, conversationId) {
+  return request(`/conversations/${conversationId}/unarchive`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` }
+  });
+}
+export function getArchivedConversations(token) {
+  return request('/conversations/archived', {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` }
+  });
+}
+
 // Pinned messages (max 3 per conversation, enforced server-side). pin/unpin
 // also broadcast pinnedMessage / unpinnedMessage over the conversation socket.
 export function pinMessage(token, conversationId, messageId) {
