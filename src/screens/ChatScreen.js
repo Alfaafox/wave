@@ -2,7 +2,7 @@ import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react'
 import {
   View, Text, FlatList, TextInput, TouchableOpacity, StyleSheet,
   KeyboardAvoidingView, Platform, Image, Alert, ActivityIndicator,
-  Modal, Clipboard, Animated, Keyboard, PanResponder
+  Modal, Clipboard, Animated, Keyboard, PanResponder, Share
 } from 'react-native';
 import Reanimated, { useSharedValue, useAnimatedStyle, withSpring } from 'react-native-reanimated';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -224,6 +224,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
   const [replyTo, setReplyTo] = useState(null);
   const [editingMessage, setEditingMessage] = useState(null);
   const [actionMenuFor, setActionMenuFor] = useState(null);
+  const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
   const [forwardPickerFor, setForwardPickerFor] = useState(null);
   const [forwardTargets, setForwardTargets] = useState([]);
   const [reactionPickerFor, setReactionPickerFor] = useState(null);
@@ -730,6 +731,41 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
   };
 
   const closeActionMenu = () => setActionMenuFor(null);
+
+  // Export the whole loaded conversation as plain text via the OS share sheet.
+  // System messages, deleted messages and raw media payloads are left out -
+  // images/voice notes are represented by a short placeholder.
+  const handleExportChat = async () => {
+    setHeaderMenuOpen(false);
+    const chatName = isGroup ? (groupName || 'Group chat') : (otherUser?.name || 'Chat');
+    const lines = [...messages]
+      .sort((a, b) => {
+        const t = new Date(a.created_at) - new Date(b.created_at);
+        return t !== 0 ? t : (Number(a.id) || 0) - (Number(b.id) || 0);
+      })
+      .filter((m) => m.message_type !== 'system' && !m.deleted_for_everyone)
+      .map((m) => {
+        const when = new Date(m.created_at).toLocaleString();
+        const who = m.username || 'Unknown';
+        let body;
+        if (m.message_type === 'image') body = '[Image]';
+        else if (m.message_type === 'audio') body = '[Voice Message]';
+        else body = (m.content || '').trim();
+        return `[${when}] ${who}: ${body}`;
+      });
+
+    if (lines.length === 0) {
+      Alert.alert('Nothing to export', 'There are no messages in this chat yet.');
+      return;
+    }
+
+    const text = `Wave chat export - ${chatName}\nExported ${new Date().toLocaleString()}\n\n${lines.join('\n')}`;
+    try {
+      await Share.share({ message: text });
+    } catch (e) {
+      // user dismissed the share sheet, or it is unavailable - nothing to do
+    }
+  };
 
   const handleReply = () => {
     setReplyTo(actionMenuFor);
@@ -1262,10 +1298,24 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
                   </TouchableOpacity>
                 </>
               )}
+              <TouchableOpacity onPress={() => setHeaderMenuOpen(true)} style={styles.headerIconBtn}>
+                <Ionicons name="ellipsis-vertical" size={20} color={colors.textSecondary} />
+              </TouchableOpacity>
             </View>
           </>
         )}
       </View>
+
+      <Modal visible={headerMenuOpen} transparent animationType="fade" onRequestClose={() => setHeaderMenuOpen(false)}>
+        <TouchableOpacity style={styles.headerMenuOverlay} activeOpacity={1} onPress={() => setHeaderMenuOpen(false)}>
+          <View style={[styles.headerMenuDropdown, { top: headerHeight || 96 }]}>
+            <TouchableOpacity style={styles.headerMenuItem} onPress={handleExportChat}>
+              <Ionicons name="share-outline" size={18} color={colors.textPrimary} />
+              <Text style={styles.headerMenuText}>Export Chat</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
 
       {!searchMode && !hidePinBar && pinnedMessages.length > 0 && (
         <TouchableOpacity
@@ -2073,6 +2123,15 @@ const styles = StyleSheet.create({
   actionOverlay: { flex: 1, backgroundColor: colors.overlay, justifyContent: 'center', alignItems: 'center' },
   actionMenu: { backgroundColor: colors.background, borderRadius: radii.md, width: 220, paddingVertical: spacing.sm, ...shadow.md },
   actionItem: { paddingVertical: 14, paddingHorizontal: spacing.xl },
+
+  headerMenuOverlay: { flex: 1, backgroundColor: 'transparent' },
+  headerMenuDropdown: {
+    position: 'absolute', right: spacing.lg, minWidth: 200,
+    backgroundColor: colors.background, borderRadius: radii.md,
+    paddingVertical: spacing.xs, ...shadow.md,
+  },
+  headerMenuItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: spacing.lg },
+  headerMenuText: { fontSize: 15, color: colors.textPrimary, marginLeft: spacing.md },
   actionItemRow: { flexDirection: 'row', alignItems: 'center' },
   actionText: { fontSize: 16, color: colors.textPrimary },
   modalOverlay: { flex: 1, backgroundColor: colors.overlay, justifyContent: 'flex-end' },
