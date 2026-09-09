@@ -27,7 +27,7 @@ import StarredMessagesScreen from './src/screens/StarredMessagesScreen';
 import ArchivedChatsScreen from './src/screens/ArchivedChatsScreen';
 import NotificationBanner from './src/components/NotificationBanner';
 import { colors } from './src/theme';
-import { disconnectSocket, connectSocket } from './src/utils/socket';
+import { disconnectSocket, connectSocket, getSocket } from './src/utils/socket';
 import { getCurrentUser, getConversations, updateProfilePicture } from './src/utils/api';
 import {
   getPermissionStatus,
@@ -104,7 +104,15 @@ export default function App() {
     const s = connectSocket(token);
     setSocket(s);
     const handleIncomingCall = ({ callId, fromUserId, fromName, callType }) => {
-      setIncomingCall({ mode: 'incoming', callId, fromUserId, fromName, callType });
+      // De-dupe: the server replays call:incoming on reconnect / via call:sync
+      // (so a wake-from-push app that missed the original ring still gets it).
+      // Ignoring a repeat for a call we're already showing keeps CallScreen
+      // from remounting mid-negotiation.
+      setIncomingCall((cur) => (
+        cur && cur.callId === callId
+          ? cur
+          : { mode: 'incoming', callId, fromUserId, fromName, callType }
+      ));
       // Call glare: if we're mid-outgoing-call to this exact person, their
       // invite crossed ours and the server let it win. Drop our outgoing
       // attempt now so the two full-screen CallScreens never render stacked -
@@ -112,6 +120,10 @@ export default function App() {
       // this just removes the brief window before that ack arrives.
       setOutgoingCall((cur) => (cur && cur.targetUserId === fromUserId ? null : cur));
     };
+    // Ask the server to replay any call still ringing for us the moment we
+    // (re)connect - covers an app woken by the call push whose socket had
+    // dropped while backgrounded, so the original room emit went nowhere.
+    const requestCallSync = () => s.emit('call:sync');
     const handleProfileUpdatedFromSocket = (freshUser) => {
       setCurrentUser(freshUser);
       AsyncStorage.setItem('user', JSON.stringify(freshUser));
@@ -149,22 +161,27 @@ export default function App() {
     s.on('presence:online', handlePresenceOnline);
     s.on('presence:offline', handlePresenceOffline);
     s.on('presence:sync', handlePresenceSync);
+    s.on('connect', requestCallSync);
+    if (s.connected) requestCallSync();
     return () => {
       s.off('call:incoming', handleIncomingCall);
       s.off('profileUpdated', handleProfileUpdatedFromSocket);
       s.off('presence:online', handlePresenceOnline);
       s.off('presence:offline', handlePresenceOffline);
       s.off('presence:sync', handlePresenceSync);
+      s.off('connect', requestCallSync);
     };
   }, [token]);
 
-  // Foreground/background presence. The socket stays connected either way (call
-  // signaling rides it), but we tell the server which state we're in: while
-  // foregrounded the server delivers messages live over the socket and skips
-  // the push; once backgrounded it sends a "New message" push instead. Without
-  // this the server always sees a connected socket as "online" and no message
-  // push ever fires. Calls are unaffected - call:invite still uses raw online
-  // state and its own wake-up push.
+  // Foreground/background presence + heartbeat. The socket stays connected
+  // either way (call signaling rides it), but we tell the server which state
+  // we're in: while foregrounded the server delivers messages live over the
+  // socket and skips the push; once backgrounded it sends a "New message" push
+  // instead. The `{ heartbeat: true }` flag opts this socket into the server's
+  // foreground TTL: if these pings stop arriving (Android froze our JS thread
+  // on background, so `presence:background` never fired) the server treats us
+  // as backgrounded within ~45s and resumes pushing. Calls are unaffected -
+  // call:invite uses raw online state and its own wake-up push.
   useEffect(() => {
     if (!socket) return undefined;
     let bgTimer = null;
@@ -174,9 +191,14 @@ export default function App() {
         bgTimer = null;
       }
     };
+    const pingForeground = () => socket.emit('presence:foreground', { heartbeat: true });
     const emitForeground = () => {
       clearBgTimer();
-      socket.emit('presence:foreground');
+      // A socket.io auto-reconnect can lag well behind AppState going active
+      // (backoff timer still counting). Kick it now so the ~45s-stale server
+      // foreground state - and any ringing call - is corrected immediately.
+      if (!socket.connected) socket.connect();
+      pingForeground();
     };
     const scheduleBackground = () => {
       clearBgTimer();
@@ -191,13 +213,16 @@ export default function App() {
     // network blip while we're backgrounded, and a fresh server socket defaults
     // to "foreground".
     const syncNow = () => {
-      socket.emit(
-        AppState.currentState === 'active' ? 'presence:foreground' : 'presence:background'
-      );
+      if (AppState.currentState === 'active') pingForeground();
+      else socket.emit('presence:background');
     };
 
     syncNow();
     socket.on('connect', syncNow);
+    // Foreground heartbeat: refresh the server's TTL while we're actually up.
+    const hb = setInterval(() => {
+      if (AppState.currentState === 'active') pingForeground();
+    }, 20000);
     const sub = AppState.addEventListener('change', (next) => {
       if (next === 'active') emitForeground();
       else if (next === 'background') scheduleBackground();
@@ -206,6 +231,7 @@ export default function App() {
 
     return () => {
       clearBgTimer();
+      clearInterval(hb);
       socket.off('connect', syncNow);
       sub.remove();
     };
@@ -356,13 +382,23 @@ export default function App() {
       if (!data || !token) return;
 
       if (data.type === 'call') {
-        setIncomingCall({
-          mode: 'incoming',
-          callId: data.callId,
-          fromUserId: Number(data.fromUserId),
-          fromName: data.fromName,
-          callType: data.callType,
-        });
+        // The tap may have cold-started us, or woken us with a socket that
+        // dropped while backgrounded. Kick the connection now so call:accept
+        // has a live socket by the time the user hits Accept; the server
+        // replays call:incoming once we're back (connect -> call:sync).
+        const sock = getSocket();
+        if (sock && !sock.connected) sock.connect();
+        setIncomingCall((cur) => (
+          cur && cur.callId === data.callId
+            ? cur
+            : {
+                mode: 'incoming',
+                callId: data.callId,
+                fromUserId: Number(data.fromUserId),
+                fromName: data.fromName,
+                callType: data.callType,
+              }
+        ));
         return;
       }
       if (data.type === 'missedCall') {
