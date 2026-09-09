@@ -1100,6 +1100,42 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
             );
           }
 
+          const timeLabel = new Date(item.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          const hasReactions = Array.isArray(item.reactions) && item.reactions.length > 0;
+          // WhatsApp-style inline timestamp: for a plain text message with no
+          // reaction pills below it, the time + ticks are absolutely pinned to
+          // the bubble's bottom-right corner and an invisible, timestamp-sized
+          // spacer is appended after the text so the last line reserves room -
+          // the time sits on that line if it fits, or wraps to its own line if
+          // not. Image / voice / system messages keep the normal flow meta row.
+          const inlineTimestamp = item.message_type === 'text' && !hasReactions;
+          // Same font size (10) as the real meta below; a little generous on
+          // the trailing pad so text always clears the timestamp. Sent bubbles
+          // reserve extra width for the tick icon.
+          const metaSpacer =
+            '  '
+            + (item.edited === 1 ? 'edited  ' : '')
+            + timeLabel
+            + (isMine ? '      ' : '  ');
+
+          const metaContent = (
+            <>
+              {item.edited === 1 && (
+                <Text style={[styles.editedLabel, { color: isMine ? 'rgba(255,255,255,0.6)' : colors.textMuted }]}>edited</Text>
+              )}
+              <Text style={[styles.bubbleTime, { color: isMine ? 'rgba(255,255,255,0.7)' : colors.textMuted }]}>
+                {timeLabel}
+              </Text>
+              {isMine && (
+                <Ionicons
+                  name={item.delivered ? 'checkmark-done' : 'checkmark'}
+                  size={14}
+                  color={item.read ? '#8FD3FF' : 'rgba(255,255,255,0.7)'}
+                />
+              )}
+            </>
+          );
+
           const bubble = (
             <TouchableOpacity
               activeOpacity={0.85}
@@ -1149,23 +1185,17 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
               {item.message_type === 'text' && (
                 <Text style={[styles.bubbleText, { color: isMine ? colors.bubbleOutgoingText : colors.bubbleIncomingText }]}>
                   {item.content}
+                  {inlineTimestamp && (
+                    <Text style={styles.inlineMetaSpacer}>{metaSpacer}</Text>
+                  )}
                 </Text>
               )}
 
-              <View style={styles.metaRow}>
-                {item.edited === 1 && (
-                  <Text style={[styles.editedLabel, { color: isMine ? 'rgba(255,255,255,0.6)' : colors.textMuted }]}>edited</Text>
-                )}
-                <Text style={[styles.bubbleTime, { color: isMine ? 'rgba(255,255,255,0.7)' : colors.textMuted }]}>
-                  {new Date(item.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                </Text>
-                {isMine && (
-                  <Ionicons
-                    name={item.delivered ? 'checkmark-done' : 'checkmark'}
-                    size={14}
-                    color={item.read ? '#8FD3FF' : 'rgba(255,255,255,0.7)'}
-                  />
-                )}
+              <View
+                style={inlineTimestamp ? styles.inlineMeta : styles.metaRow}
+                pointerEvents={inlineTimestamp ? 'none' : 'auto'}
+              >
+                {metaContent}
               </View>
               <ReactionPills
                 reactions={item.reactions}
@@ -1610,7 +1640,7 @@ const styles = StyleSheet.create({
   },
   systemText: { fontSize: 12, color: colors.textSecondary, textAlign: 'center' },
 
-  bubble: { maxWidth: '78%', borderRadius: radii.bubble, padding: spacing.md, marginBottom: spacing.sm },
+  bubble: { maxWidth: '78%', borderRadius: radii.bubble, padding: spacing.md, marginBottom: spacing.sm, position: 'relative' },
   bubbleMine: {
     backgroundColor: colors.bubbleOutgoing, alignSelf: 'flex-end',
     borderBottomRightRadius: radii.bubbleTail
@@ -1644,6 +1674,11 @@ const styles = StyleSheet.create({
   replyPreviewTextMine: { color: 'rgba(255,255,255,0.85)' },
   replyPreviewTextTheirs: { color: colors.textSecondary },
   metaRow: { flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', marginTop: 4 },
+  // WhatsApp-style inline timestamp: pinned to the bubble's bottom-right corner
+  // for text messages, sitting over the invisible `inlineMetaSpacer` reserved
+  // at the end of the message text.
+  inlineMeta: { position: 'absolute', right: 8, bottom: 4, flexDirection: 'row', alignItems: 'center' },
+  inlineMetaSpacer: { fontSize: 10, color: 'transparent' },
   editedLabel: { fontSize: 10, marginRight: 4, fontStyle: 'italic' },
   bubbleTime: { fontSize: 10, marginRight: 4 },
 
