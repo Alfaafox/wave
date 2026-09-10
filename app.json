@@ -24,7 +24,8 @@
       "googleServicesFile": "./google-services.json",
       "permissions": [
         "android.permission.MODIFY_AUDIO_SETTINGS",
-        "android.permission.BLUETOOTH_CONNECT"
+        "android.permission.BLUETOOTH_CONNECT",
+        "android.permission.USE_FULL_SCREEN_INTENT"
       ]
     },
     "web": {
@@ -49,7 +50,8 @@
         {
           "color": "#2C6BED"
         }
-      ]
+      ],
+      "./plugins/withFullScreenCall.js"
     ],
     "extra": {
       "eas": {
