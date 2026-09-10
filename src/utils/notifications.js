@@ -58,7 +58,10 @@ export async function getDeviceId() {
 // The 'messages' channel reflects the wave:notif:sound / wave:notif:vibrate
 // prefs: sound on -> HIGH (heads-up + sound), sound off -> LOW (silent, shade
 // only); vibrate off -> empty pattern. The 'calls' channel is always MAX and
-// always vibrates - a call has to be felt.
+// always vibrates - a call has to be felt - and carries fullScreenIntent so a
+// backgrounded / locked device shows the incoming-call UI over the lock screen
+// (paired with USE_FULL_SCREEN_INTENT + showWhenLocked/turnScreenOn on
+// MainActivity in AndroidManifest.xml).
 function messagesChannelConfig(prefs) {
   return {
     name: 'Messages',
@@ -81,6 +84,9 @@ export async function setupAndroidChannels() {
       importance: Notifications.AndroidImportance.MAX,
       vibrationPattern: [0, 500, 500, 500],
       lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+      // Ask the OS to launch the app full-screen (over the lock screen) for an
+      // incoming call rather than just posting a heads-up notification.
+      fullScreenIntent: true,
     });
   } catch (err) {
     console.warn('notif channel setup failed:', err?.message);
