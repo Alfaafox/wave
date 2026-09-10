@@ -5,6 +5,7 @@ import { RTCView } from 'react-native-webrtc';
 import { Ionicons } from '@expo/vector-icons';
 import { createCallManager } from '../utils/callManager';
 import ExpoCallAudioModule from '../../modules/expo-call-audio/src/ExpoCallAudioModule';
+import AudioOutputSheet from '../components/AudioOutputSheet';
 import { useAudioPlayer } from 'expo-audio';
 
 // Server ends an unanswered call at 60s (RING_TIMEOUT_MS in call_signaling.js).
@@ -35,6 +36,9 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
   // module once the call is up and kept live by its onAudioRouteChanged event.
   const [audioRoute, setAudioRoute] = useState('earpiece');
   const [availableRoutes, setAvailableRoutes] = useState(['earpiece', 'speaker']);
+  // Route-picker bottom sheet - only used when a Bluetooth headset makes 3
+  // routes available. With just earpiece + speaker the button toggles directly.
+  const [routeSheetOpen, setRouteSheetOpen] = useState(false);
   const [cameraOff, setCameraOff] = useState(false);
   const [duration, setDuration] = useState(0);
   const callManagerRef = useRef(null);
@@ -193,6 +197,12 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
     try {
       sub = ExpoCallAudioModule.addListener?.('onAudioRouteChanged', (e) => {
         if (e?.route) setAudioRoute(e.route);
+        // A headset connecting / disconnecting changes the active route AND the
+        // available-routes list, so re-read the list on every route change.
+        try {
+          const routes = ExpoCallAudioModule.getAvailableRoutes?.();
+          if (Array.isArray(routes) && routes.length) setAvailableRoutes(routes);
+        } catch (e2) {}
       });
     } catch (err) {
       console.log('[CALL] WARNING - audio route listener failed:', err?.message);
@@ -292,12 +302,7 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
   const handleToggleMute = () => setMuted(!!callManagerRef.current?.toggleMute());
   const handleToggleCamera = () => setCameraOff(!!callManagerRef.current?.toggleCamera());
 
-  // Cycle to the next available route: bluetooth (if connected) -> earpiece ->
-  // speaker -> bluetooth... When no headset is connected it's just earpiece <-> speaker.
-  const cycleAudioRoute = () => {
-    const order = availableRoutes.length ? availableRoutes : ['earpiece', 'speaker'];
-    const idx = order.indexOf(audioRoute);
-    const next = order[(idx + 1) % order.length];
+  const applyAudioRoute = (next) => {
     try {
       ExpoCallAudioModule.setAudioRoute(next);
       setAudioRoute(next); // optimistic; the onAudioRouteChanged event confirms
@@ -305,6 +310,30 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
       console.log('[CALL] WARNING - setAudioRoute failed:', err?.message);
     }
   };
+
+  // Smart audio button:
+  //  - 2 routes (earpiece + speaker, no headset): tap toggles between them.
+  //  - 3 routes (Bluetooth connected): tap opens the route-picker bottom sheet.
+  const handleAudioButtonPress = () => {
+    const order = availableRoutes.length ? availableRoutes : ['earpiece', 'speaker'];
+    if (order.length >= 3) {
+      setRouteSheetOpen(true);
+      return;
+    }
+    const idx = order.indexOf(audioRoute);
+    applyAudioRoute(order[(idx + 1) % order.length]);
+  };
+
+  const handlePickRoute = (route) => {
+    applyAudioRoute(route);
+    setRouteSheetOpen(false);
+  };
+
+  // If the headset drops while the sheet is open, there are only 2 routes left -
+  // close the sheet (the button reverts to a direct toggle).
+  useEffect(() => {
+    if (routeSheetOpen && availableRoutes.length < 3) setRouteSheetOpen(false);
+  }, [routeSheetOpen, availableRoutes]);
   const handleSwitchCamera = () => callManagerRef.current?.switchCamera();
 
   const otherName = callInfo.mode === 'incoming' ? callInfo.fromName : callInfo.targetName;
@@ -398,14 +427,14 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
                 </TouchableOpacity>
                 <Text style={styles.controlLabel}>{muted ? 'Unmute' : 'Mute'}</Text>
               </View>
-              {!isVideo && (
-                <View style={styles.controlColumn}>
-                  <TouchableOpacity style={styles.smallButton} onPress={cycleAudioRoute}>
-                    <Ionicons name={routeIcon} size={22} color={routeIconColor} />
-                  </TouchableOpacity>
-                  <Text style={styles.controlLabel}>{routeLabel}</Text>
-                </View>
-              )}
+              {/* Audio-output button - always visible on audio AND video calls
+                  (research confirmed hiding it on video frustrates users). */}
+              <View style={styles.controlColumn}>
+                <TouchableOpacity style={styles.smallButton} onPress={handleAudioButtonPress}>
+                  <Ionicons name={routeIcon} size={22} color={routeIconColor} />
+                </TouchableOpacity>
+                <Text style={styles.controlLabel}>{routeLabel}</Text>
+              </View>
               {isVideo && (
                 <View style={styles.controlColumn}>
                   <TouchableOpacity style={styles.smallButton} onPress={handleToggleCamera}>
@@ -431,6 +460,14 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
             </>
           )}
         </View>
+
+        <AudioOutputSheet
+          visible={routeSheetOpen}
+          routes={availableRoutes}
+          activeRoute={audioRoute}
+          onSelect={handlePickRoute}
+          onClose={() => setRouteSheetOpen(false)}
+        />
       </View>
     </View>
   );
@@ -490,7 +527,10 @@ const styles = StyleSheet.create({
   videoHeaderDuration: { color: 'rgba(255,255,255,0.75)', fontSize: 13, marginTop: 2, textShadowColor: 'rgba(0,0,0,0.6)', textShadowRadius: 6 },
   controls: {
     position: 'absolute', bottom: 56, left: 0, right: 0,
-    flexDirection: 'row', justifyContent: 'center', alignItems: 'flex-start', gap: 28,
+    flexDirection: 'row', justifyContent: 'center', alignItems: 'flex-start',
+    // wrap so the always-visible audio button never pushes a control off-screen
+    // on a video call (mute + audio + camera + flip + end on a narrow phone).
+    flexWrap: 'wrap', columnGap: 28, rowGap: 18, paddingHorizontal: 12,
   },
   controlColumn: { alignItems: 'center', width: 64 },
   controlLabel: { color: 'rgba(255,255,255,0.7)', fontSize: 11, marginTop: 8 },

@@ -22,6 +22,10 @@ class ExpoCallAudioModule : Module() {
 
   @Volatile private var inCall = false
   @Volatile private var currentRoute = ROUTE_EARPIECE
+  // Set in startCallAudio for the life of the call. Decides the fallback route
+  // when a Bluetooth headset drops mid-call: a video call falls back to speaker,
+  // an audio call to earpiece (matches WhatsApp / Signal).
+  @Volatile private var isVideoCall = false
 
   private var deviceCallback: AudioDeviceCallback? = null
   private val mainHandler = Handler(Looper.getMainLooper())
@@ -56,8 +60,8 @@ class ExpoCallAudioModule : Module() {
 
     // Call this when a call starts (right when local media is acquired).
     // Priority order matches WhatsApp / Signal: a connected Bluetooth SCO / LE
-    // headset always wins; otherwise the default is speaker for video calls and
-    // earpiece for audio calls (the module's previous behaviour, kept here).
+    // headset always wins (audio AND video); otherwise the default is speaker
+    // for video calls and earpiece for audio calls.
     Function("startCallAudio") { isVideo: Boolean ->
       val am = audioManager() ?: return@Function Unit
       if (!inCall) previousAudioMode = am.mode
@@ -66,7 +70,11 @@ class ExpoCallAudioModule : Module() {
       am.requestAudioFocus(null, AudioManager.STREAM_VOICE_CALL, AudioManager.AUDIOFOCUS_GAIN)
       am.mode = AudioManager.MODE_IN_COMMUNICATION
       inCall = true
+      isVideoCall = isVideo
 
+      // Bluetooth detection runs first for BOTH audio and video calls - a
+      // connected SCO / LE headset always wins. Only when there is no headset
+      // does the call type decide: video -> speaker, audio -> earpiece.
       val initial = when {
         hasBluetoothRoute(am) -> ROUTE_BLUETOOTH
         isVideo -> ROUTE_SPEAKER
@@ -77,7 +85,7 @@ class ExpoCallAudioModule : Module() {
       // Registered AFTER the initial route so its one-time "devices added"
       // callback doesn't fight the routing we just did. From here on it
       // auto-switches to a headset that connects mid-call and falls back to
-      // earpiece when one disconnects.
+      // speaker (video) / earpiece (audio) when one disconnects.
       registerDeviceCallback(am)
       Unit
     }
@@ -88,6 +96,7 @@ class ExpoCallAudioModule : Module() {
     Function("stopCallAudio") {
       val am = audioManager() ?: return@Function Unit
       inCall = false
+      isVideoCall = false
       unregisterDeviceCallback(am)
 
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -251,7 +260,9 @@ class ExpoCallAudioModule : Module() {
         if (!inCall) return
         val lostBluetooth = removedDevices?.any { isBluetoothType(it.type) } == true
         if (lostBluetooth && currentRoute == ROUTE_BLUETOOTH) {
-          applyRoute(ROUTE_EARPIECE)
+          // Fall back the way a fresh call of this type would start: video ->
+          // speaker, audio -> earpiece.
+          applyRoute(if (isVideoCall) ROUTE_SPEAKER else ROUTE_EARPIECE)
         }
       }
     }
