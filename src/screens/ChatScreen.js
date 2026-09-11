@@ -2,18 +2,21 @@ import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react'
 import {
   View, Text, FlatList, TextInput, TouchableOpacity, StyleSheet,
   KeyboardAvoidingView, Platform, Image, Alert, ActivityIndicator,
-  Modal, Clipboard, Animated, Keyboard, PanResponder, Share
+  Modal, Clipboard, Animated, Keyboard, PanResponder, Share, Linking
 } from 'react-native';
 import Reanimated, { useSharedValue, useAnimatedStyle, withSpring } from 'react-native-reanimated';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as ImagePicker from 'expo-image-picker';
 import * as MediaLibrary from 'expo-media-library/legacy';
 import * as FileSystem from 'expo-file-system/legacy';
+import * as DocumentPicker from 'expo-document-picker';
+import * as Location from 'expo-location';
+import * as IntentLauncher from 'expo-intent-launcher';
 import {
   AudioModule, RecordingPresets, setAudioModeAsync,
   useAudioRecorder, useAudioRecorderState, useAudioPlayer, useAudioPlayerStatus
 } from 'expo-audio';
-import { getMessages, getConversations, setConversationMute, setPrivateChat, searchMessages, starMessage, unstarMessage, pinMessage, unpinMessage, getPinnedMessages, SERVER_URL } from '../utils/api';
+import { getMessages, getConversations, setConversationMute, setPrivateChat, searchMessages, starMessage, unstarMessage, pinMessage, unpinMessage, getPinnedMessages, uploadFile, getFileUrl, SERVER_URL } from '../utils/api';
 import { connectSocket } from '../utils/socket';
 import { ReactionPicker, ReactionPills } from '../components/MessageReactions';
 import MediaPickerSheet from '../components/MediaPickerSheet';
@@ -46,6 +49,48 @@ const VIEW_ONCE_PILLS = [
 const SWIPE_MAX = 80;        // translation is clamped here
 const SWIPE_THRESHOLD = 60;  // release past this fires the reply
 
+// File sharing (Session 18). Mirrors the server's ALLOWED_TYPES
+// (fileStorage.js) - kept here too so a bad pick is rejected instantly,
+// before spending any upload bandwidth; the server re-validates regardless.
+const ALLOWED_DOC_MIME = [
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'text/plain',
+  'application/zip',
+  'application/x-zip-compressed',
+  'audio/mpeg',
+  'audio/mp3',
+  'video/mp4',
+];
+const MAX_FILE_BYTES = 25 * 1024 * 1024;
+
+function formatFileSize(bytes) {
+  if (!bytes || bytes <= 0) return '';
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// Icon per file type - mime first, extension as a fallback (DOCUMENT_TYPES
+// on the server can't always be trusted 1:1 to a specific client mimetype
+// string, e.g. some pickers report .doc as octet-stream).
+function fileIconFor(mimeType, name) {
+  const ext = String(name || '').split('.').pop()?.toLowerCase() || '';
+  if (mimeType === 'application/pdf' || ext === 'pdf') return 'document-text-outline';
+  if (['doc', 'docx'].includes(ext)) return 'document-text-outline';
+  if (['xls', 'xlsx'].includes(ext)) return 'grid-outline';
+  if (['ppt', 'pptx'].includes(ext)) return 'easel-outline';
+  if (ext === 'zip') return 'archive-outline';
+  if (ext === 'mp3' || String(mimeType || '').startsWith('audio/')) return 'musical-notes-outline';
+  if (ext === 'mp4' || String(mimeType || '').startsWith('video/')) return 'videocam-outline';
+  if (ext === 'txt') return 'document-outline';
+  return 'document-attach-outline';
+}
+
 function truncate(text, max) {
   const s = (text || '').replace(/\s+/g, ' ').trim();
   return s.length > max ? `${s.slice(0, max)}...` : s;
@@ -56,6 +101,8 @@ function pinSnippet(p) {
   if (!p) return '';
   if (p.message_type === 'image') return 'Photo';
   if (p.message_type === 'audio') return 'Voice message';
+  if (p.message_type === 'location') return 'Location';
+  if (p.message_type === 'file') return p.content || 'Document';
   return (p.content || '').replace(/\s+/g, ' ').trim() || 'Message';
 }
 
@@ -225,6 +272,73 @@ function AudioBubble({ uri, isMine }) {
   );
 }
 
+// message_type === 'file'. `item.file_name` / `file_mime_type` / `file_size`
+// come from the LEFT JOIN message_files in GET /:id/messages (and are already
+// on the object the server broadcasts after a successful upload); `content`
+// is the same filename as a plain-text fallback if those are ever missing.
+function FileBubble({ item, isMine, downloading, onPress }) {
+  const name = item.file_name || item.content || 'File';
+  const ext = name.includes('.') ? name.split('.').pop().toUpperCase() : '';
+  const iconColor = isMine ? colors.bubbleOutgoingText : colors.accent;
+  return (
+    <TouchableOpacity style={styles.fileRow} onPress={onPress} disabled={downloading} activeOpacity={0.7}>
+      <View style={[styles.fileIconWrap, isMine ? styles.fileIconWrapMine : styles.fileIconWrapTheirs]}>
+        {downloading
+          ? <ActivityIndicator size="small" color={iconColor} />
+          : <Ionicons name={fileIconFor(item.file_mime_type, name)} size={26} color={iconColor} />}
+      </View>
+      <View style={styles.fileTextCol}>
+        <Text style={[styles.fileName, { color: isMine ? colors.bubbleOutgoingText : colors.bubbleIncomingText }]} numberOfLines={1}>
+          {name}
+        </Text>
+        <Text style={[styles.fileMeta, { color: isMine ? 'rgba(255,255,255,0.7)' : colors.textMuted }]}>
+          {ext}{item.file_size ? ` \u00B7 ${formatFileSize(item.file_size)}` : ''}
+        </Text>
+      </View>
+      <Ionicons name="download-outline" size={16} color={isMine ? 'rgba(255,255,255,0.7)' : colors.textMuted} />
+    </TouchableOpacity>
+  );
+}
+
+// message_type === 'location'. content is JSON { latitude, longitude } (see
+// shareLocation) - a one-shot pin, not live tracking. No map thumbnail: this
+// app has no maps API key and no react-native-maps dependency, and the only
+// key-less static-map image services are unauthenticated demo endpoints not
+// fit to depend on for a real feature, so the card is coordinates + a tap
+// that hands off to the device's own maps app instead of trying to render a
+// preview image.
+function LocationBubble({ item, isMine, onPress }) {
+  let coords = null;
+  try { coords = JSON.parse(item.content); } catch (e) { /* leave null */ }
+  const valid = coords && typeof coords.latitude === 'number' && typeof coords.longitude === 'number';
+  const iconColor = isMine ? colors.bubbleOutgoingText : colors.accent;
+
+  if (!valid) {
+    return (
+      <Text style={[styles.bubbleText, { color: isMine ? colors.bubbleOutgoingText : colors.bubbleIncomingText }]}>
+        Location unavailable
+      </Text>
+    );
+  }
+
+  return (
+    <TouchableOpacity style={styles.fileRow} onPress={() => onPress(coords)} activeOpacity={0.7}>
+      <View style={[styles.fileIconWrap, isMine ? styles.fileIconWrapMine : styles.fileIconWrapTheirs]}>
+        <Ionicons name="location" size={24} color={iconColor} />
+      </View>
+      <View style={styles.fileTextCol}>
+        <Text style={[styles.fileName, { color: isMine ? colors.bubbleOutgoingText : colors.bubbleIncomingText }]}>
+          Location
+        </Text>
+        <Text style={[styles.fileMeta, { color: isMine ? 'rgba(255,255,255,0.7)' : colors.textMuted }]} numberOfLines={1}>
+          {coords.latitude.toFixed(4)}, {coords.longitude.toFixed(4)} {'\u00B7'} View on map
+        </Text>
+      </View>
+      <Ionicons name="open-outline" size={16} color={isMine ? 'rgba(255,255,255,0.7)' : colors.textMuted} />
+    </TouchableOpacity>
+  );
+}
+
 export default function ChatScreen({ token, currentUser, conversationId, otherUser, isGroup, groupName, presenceMap, onBack, onStartCall, jumpToMessageId }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
@@ -233,6 +347,17 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
   const [typing, setTyping] = useState({ state: 'gone', userId: null, name: '' });
   const [sendingImage, setSendingImage] = useState(false);
   const [sendingCameraImage, setSendingCameraImage] = useState(false);
+  // File sharing / location sharing (Session 18). attachMenuOpen shows the
+  // Photo & Video / Document / Location popover the paperclip button opens
+  // (it used to jump straight to the gallery picker). downloadingFileId is
+  // the message id currently being fetched to open (single at a time is
+  // fine - tapping a second file while one is downloading is rare enough
+  // not to need a Set).
+  const [attachMenuOpen, setAttachMenuOpen] = useState(false);
+  const [sendingFile, setSendingFile] = useState(false);
+  const [fileUploadProgress, setFileUploadProgress] = useState(0);
+  const [fetchingLocation, setFetchingLocation] = useState(false);
+  const [downloadingFileId, setDownloadingFileId] = useState(null);
   const [replyTo, setReplyTo] = useState(null);
   const [editingMessage, setEditingMessage] = useState(null);
   const [actionMenuFor, setActionMenuFor] = useState(null);
@@ -729,6 +854,121 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     }
   };
 
+  // Document attach (attach menu -> Document). Uploaded over REST, not the
+  // socket - see uploadFile() in api.js. No manual append to `messages` on
+  // success: the server broadcasts the inserted message back over the
+  // socket 'message' event to everyone already in the conversation room,
+  // including us (the same room-broadcast the socket path itself relies on),
+  // so the existing handleMessage listener picks it up like any other
+  // message.
+  const pickDocument = async () => {
+    setAttachMenuOpen(false);
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ALLOWED_DOC_MIME,
+        copyToCacheDirectory: true,
+        multiple: false,
+      });
+      if (result.canceled) return;
+      const asset = result.assets?.[0];
+      if (!asset) return;
+      if (asset.size && asset.size > MAX_FILE_BYTES) {
+        Alert.alert('File too large', 'Files can be up to 25MB.');
+        return;
+      }
+      setSendingFile(true);
+      setFileUploadProgress(0);
+      await uploadFile(token, conversationId, asset, setFileUploadProgress);
+    } catch (err) {
+      Alert.alert('Could not send file', err.message || 'Try again.');
+    } finally {
+      setSendingFile(false);
+      setFileUploadProgress(0);
+    }
+  };
+
+  // One-shot location share (attach menu -> Location). A single current fix,
+  // not live tracking - sent as a small JSON payload over the existing
+  // socket 'message' event (message_type: 'location'), same path as a text
+  // message. See LocationBubble for why there's no map thumbnail.
+  const shareLocation = async () => {
+    setAttachMenuOpen(false);
+    try {
+      const permission = await Location.requestForegroundPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert('Permission needed', 'We need location access to share your location.');
+        return;
+      }
+      setFetchingLocation(true);
+      const position = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+      sendMessage(JSON.stringify({
+        latitude: position.coords.latitude,
+        longitude: position.coords.longitude,
+      }), 'location');
+    } catch (err) {
+      Alert.alert('Could not get your location', err.message || 'Make sure location services are on.');
+    } finally {
+      setFetchingLocation(false);
+    }
+  };
+
+  // Tapping a shared location opens it in the device's own maps app -
+  // universal Google Maps search link works cross-platform (opens the Maps
+  // app if installed, else the browser) without needing Linking scheme
+  // detection for geo: vs Apple Maps.
+  const openLocation = (coords) => {
+    const url = `https://www.google.com/maps/search/?api=1&query=${coords.latitude},${coords.longitude}`;
+    Linking.openURL(url).catch(() => Alert.alert('Could not open maps', 'No maps app is available.'));
+  };
+
+  // Tapping a file message: download once to cache (skip if already there),
+  // then hand it to Android's native "Open with" app chooser via
+  // ACTION_VIEW - expo-sharing's ACTION_SEND share sheet was the wrong
+  // intent for this (it offers contacts/apps to send the file TO, not apps
+  // that can open it), which is why a PDF tap didn't show Acrobat/Drive etc.
+  // FileSystem.getContentUriAsync() hands ACTION_VIEW a content:// URI (the
+  // same FileProvider expo-file-system already registers), which is
+  // required - a bare file:// Uri is blocked by FLAG_GRANT_READ_URI_PERMISSION
+  // on modern Android. IntentLauncher is Android-only, so iOS (not started
+  // yet per CLAUDE.md) gets an explicit "not supported" message instead of a
+  // silent crash.
+  const openFileMessage = async (item) => {
+    if (!item.file_id) {
+      Alert.alert('File unavailable', 'This file could not be found.');
+      return;
+    }
+    if (Platform.OS !== 'android') {
+      Alert.alert('Not supported', 'Opening files is only supported on Android right now.');
+      return;
+    }
+    const fileUrl = getFileUrl(conversationId, item.file_id);
+    const safeName = (item.file_name || item.content || 'file').replace(/[^\w.\- ]/g, '_');
+    const localUri = `${FileSystem.cacheDirectory}wave_file_${item.file_id}_${safeName}`;
+    setDownloadingFileId(item.id);
+    try {
+      const info = await FileSystem.getInfoAsync(localUri);
+      if (!info.exists) {
+        await FileSystem.downloadAsync(fileUrl, localUri, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+      }
+      const contentUri = await FileSystem.getContentUriAsync(localUri);
+      await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
+        data: contentUri,
+        flags: 1, // FLAG_GRANT_READ_URI_PERMISSION
+        type: item.file_mime_type || 'application/octet-stream',
+      });
+    } catch (err) {
+      // ActivityNotFoundException surfaces here when no app can handle the
+      // mime type (e.g. no PDF viewer installed) - same failure a real
+      // "Open with" chooser would hit, just reported via a thrown error
+      // instead of its own empty-chooser UI.
+      Alert.alert('Could not open file', 'No app found that can open this file type.');
+    } finally {
+      setDownloadingFileId(null);
+    }
+  };
+
   // Stable (no closure over state/props) so it can be handed to
   // SharedMediaScreen without churning its memoised list renderers.
   const saveImage = useCallback(async (uri) => {
@@ -827,6 +1067,8 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
         let body;
         if (m.message_type === 'image') body = '[Image]';
         else if (m.message_type === 'audio') body = '[Voice Message]';
+        else if (m.message_type === 'file') body = `[Document: ${(m.content || 'file').trim()}]`;
+        else if (m.message_type === 'location') body = '[Location]';
         else body = (m.content || '').trim();
         return `[${when}] ${who}: ${body}`;
       });
@@ -1035,6 +1277,15 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
   const handleForward = async () => {
     const msg = actionMenuFor;
     closeActionMenu();
+    // File messages carry a server-side file_id, not raw content - the
+    // socket 'message' path forwarding below re-sends `content` as a plain
+    // string, which would silently downgrade a forwarded file into a text
+    // message showing just its filename. Not implemented yet rather than
+    // implemented wrong.
+    if (msg?.message_type === 'file') {
+      Alert.alert('Cannot forward files yet', 'Forwarding documents is not supported yet.');
+      return;
+    }
     try {
       const convos = await getConversations(token);
       setForwardTargets(convos.filter((c) => c.id !== conversationId));
@@ -1592,11 +1843,17 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
                       <>
                         {item.reply_type === 'image' && <Ionicons name="camera-outline" size={12} color={isMine ? 'rgba(255,255,255,0.85)' : colors.textSecondary} style={{ marginRight: 4 }} />}
                         {item.reply_type === 'audio' && <Ionicons name="mic-outline" size={12} color={isMine ? 'rgba(255,255,255,0.85)' : colors.textSecondary} style={{ marginRight: 4 }} />}
+                        {item.reply_type === 'file' && <Ionicons name="document-outline" size={12} color={isMine ? 'rgba(255,255,255,0.85)' : colors.textSecondary} style={{ marginRight: 4 }} />}
+                        {item.reply_type === 'location' && <Ionicons name="location-outline" size={12} color={isMine ? 'rgba(255,255,255,0.85)' : colors.textSecondary} style={{ marginRight: 4 }} />}
                         <Text
                           style={[styles.replyPreviewText, isMine ? styles.replyPreviewTextMine : styles.replyPreviewTextTheirs]}
                           numberOfLines={1}
                         >
-                          {item.reply_type === 'image' ? 'Photo' : item.reply_type === 'audio' ? 'Voice message' : item.reply_content}
+                          {item.reply_type === 'image' ? 'Photo'
+                            : item.reply_type === 'audio' ? 'Voice message'
+                            : item.reply_type === 'location' ? 'Location'
+                            : item.reply_type === 'file' ? (item.reply_content || 'Document')
+                            : item.reply_content}
                         </Text>
                       </>
                     )}
@@ -1610,6 +1867,17 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
                 </TouchableOpacity>
               )}
               {item.message_type === 'audio' && <AudioBubble uri={item.content} isMine={isMine} />}
+              {item.message_type === 'file' && (
+                <FileBubble
+                  item={item}
+                  isMine={isMine}
+                  downloading={downloadingFileId === item.id}
+                  onPress={() => openFileMessage(item)}
+                />
+              )}
+              {item.message_type === 'location' && (
+                <LocationBubble item={item} isMine={isMine} onPress={openLocation} />
+              )}
               {item.message_type === 'text' && (
                 <Text style={[styles.bubbleText, { color: isMine ? colors.bubbleOutgoingText : colors.bubbleIncomingText }]}>
                   {item.deleted_for_everyone ? '' : item.content}
@@ -1630,9 +1898,10 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
                 </Text>
               )}
 
-              {/* Image / voice keep the flow meta row below the content. Text
-                  renders its time + ticks inline (above). */}
-              {(item.message_type === 'image' || item.message_type === 'audio') && (
+              {/* Image / voice / file / location keep the flow meta row below
+                  the content. Text renders its time + ticks inline (above). */}
+              {(item.message_type === 'image' || item.message_type === 'audio'
+                || item.message_type === 'file' || item.message_type === 'location') && (
                 <View style={styles.metaRow}>
                   {metaContent}
                 </View>
@@ -1754,6 +2023,10 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
                 ? 'Photo'
                 : replyTo.message_type === 'audio'
                 ? 'Voice message'
+                : replyTo.message_type === 'location'
+                ? 'Location'
+                : replyTo.message_type === 'file'
+                ? (replyTo.content || 'Document')
                 : truncate(replyTo.content, 80)}
             </Text>
           </View>
@@ -1829,8 +2102,14 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
           {sendingCameraImage ? <ActivityIndicator size="small" color={colors.accent} /> : <Ionicons name="camera-outline" size={23} color={colors.textSecondary} />}
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.attachButton} onPress={pickImage} disabled={sendingImage}>
-          {sendingImage ? <ActivityIndicator size="small" color={colors.accent} /> : <Ionicons name="attach-outline" size={23} color={colors.textSecondary} />}
+        <TouchableOpacity
+          style={styles.attachButton}
+          onPress={() => setAttachMenuOpen(true)}
+          disabled={sendingImage || sendingFile || fetchingLocation}
+        >
+          {(sendingImage || sendingFile || fetchingLocation)
+            ? <ActivityIndicator size="small" color={colors.accent} />
+            : <Ionicons name="attach-outline" size={23} color={colors.textSecondary} />}
         </TouchableOpacity>
 
         {editingMessage ? (
@@ -1867,6 +2146,37 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
           </TouchableOpacity>
         )}
       </View>
+      )}
+
+      <Modal visible={attachMenuOpen} transparent animationType="fade" onRequestClose={() => setAttachMenuOpen(false)}>
+        <TouchableOpacity style={styles.headerMenuOverlay} activeOpacity={1} onPress={() => setAttachMenuOpen(false)}>
+          <View style={styles.attachMenuDropdown}>
+            <TouchableOpacity
+              style={styles.headerMenuItem}
+              onPress={() => { setAttachMenuOpen(false); pickImage(); }}
+            >
+              <Ionicons name="image-outline" size={18} color={colors.textPrimary} />
+              <Text style={styles.headerMenuText}>Photo & Video</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.headerMenuItem} onPress={pickDocument}>
+              <Ionicons name="document-outline" size={18} color={colors.textPrimary} />
+              <Text style={styles.headerMenuText}>Document</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.headerMenuItem} onPress={shareLocation}>
+              <Ionicons name="location-outline" size={18} color={colors.textPrimary} />
+              <Text style={styles.headerMenuText}>Location</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {sendingFile && (
+        <View style={styles.fileUploadBanner}>
+          <ActivityIndicator size="small" color={colors.accent} />
+          <Text style={styles.fileUploadText}>
+            Sending file... {Math.round(fileUploadProgress * 100)}%
+          </Text>
+        </View>
       )}
 
       {!accountUnavailable && (
@@ -2330,6 +2640,33 @@ const styles = StyleSheet.create({
   },
   headerMenuItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: spacing.lg },
   headerMenuText: { fontSize: 15, color: colors.textPrimary, marginLeft: spacing.md },
+
+  // Attach menu (Photo & Video / Document / Location), opened from the
+  // paperclip button - bottom-anchored, unlike headerMenuDropdown's
+  // top-anchored position under the header.
+  attachMenuDropdown: {
+    position: 'absolute', bottom: 72, right: spacing.md, minWidth: 190,
+    backgroundColor: colors.background, borderRadius: radii.md,
+    paddingVertical: spacing.xs, ...shadow.md,
+  },
+  fileUploadBanner: {
+    flexDirection: 'row', alignItems: 'center', paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.lg, backgroundColor: colors.surface,
+  },
+  fileUploadText: { fontSize: 13, color: colors.textSecondary, marginLeft: spacing.sm },
+
+  // File / location message bubble content.
+  fileRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 4, minWidth: 180 },
+  fileIconWrap: {
+    width: 44, height: 44, borderRadius: radii.md,
+    justifyContent: 'center', alignItems: 'center',
+  },
+  fileIconWrapMine: { backgroundColor: 'rgba(255,255,255,0.2)' },
+  fileIconWrapTheirs: { backgroundColor: colors.surface },
+  fileTextCol: { flex: 1, marginLeft: spacing.sm, marginRight: spacing.xs },
+  fileName: { fontSize: 14, fontWeight: '600' },
+  fileMeta: { fontSize: 12, marginTop: 2 },
+
   actionItemRow: { flexDirection: 'row', alignItems: 'center' },
   actionText: { fontSize: 16, color: colors.textPrimary },
   modalOverlay: { flex: 1, backgroundColor: colors.overlay, justifyContent: 'flex-end' },

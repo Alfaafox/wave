@@ -22,6 +22,7 @@ const DISMISS_THRESHOLD = 60;
 function snippet(pin) {
   if (pin.message_type === 'image') return 'Photo';
   if (pin.message_type === 'audio') return 'Voice message';
+  if (pin.message_type === 'location') return 'Location';
   return (pin.content || '').replace(/\s+/g, ' ').trim() || 'Message';
 }
 

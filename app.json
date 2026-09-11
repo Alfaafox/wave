@@ -51,6 +51,13 @@
           "color": "#2C6BED"
         }
       ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Wave uses your location so you can share it in a chat."
+        }
+      ],
+      "expo-sharing",
       "./plugins/withFullScreenCall.js"
     ],
     "extra": {

@@ -8,12 +8,15 @@
 //   Media - month-grouped photo grid (3 per row), tap -> ImageViewerModal,
 //           long-press -> Save to Gallery / Share.
 //   Links - flat list of every URL shared in the chat, tap -> Linking.openURL.
-//   Docs  - static placeholder (no file-message type exists yet).
+//   Docs  - flat list of every file message (Session 18 file sharing), tap ->
+//           download once to cache then hand off to Android's native "Open
+//           with" chooser (ACTION_VIEW via expo-intent-launcher), same
+//           mechanism ChatScreen's openFileMessage uses.
 //
-// Backend: GET /conversations/:id/media?type=images|links (paginated 30/page,
-// private-chat 7-day window + membership enforced server-side). Base64 image
-// strings are large, so each tab paginates strictly and only ever holds what
-// has actually been scrolled to.
+// Backend: GET /conversations/:id/media?type=images|links|files (paginated
+// 30/page, private-chat 7-day window + membership enforced server-side).
+// Base64 image strings are large, so each tab paginates strictly and only
+// ever holds what has actually been scrolled to.
 //
 // The grid uses ONE FlatList whose data is a flat list of {type:'header'} and
 // {type:'row', images:[<=3]} entries: this keeps month section headers AND a
@@ -24,12 +27,37 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, Image, FlatList, TouchableOpacity, StyleSheet,
-  ActivityIndicator, RefreshControl, Alert, Share, Linking, Dimensions,
+  ActivityIndicator, RefreshControl, Alert, Share, Linking, Dimensions, Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as IntentLauncher from 'expo-intent-launcher';
 import { colors, spacing, radii } from '../theme';
-import { getSharedMedia } from '../utils/api';
+import { getSharedMedia, getFileUrl } from '../utils/api';
 import ImageViewerModal from '../components/ImageViewerModal';
+
+// Same icon-per-extension mapping as ChatScreen's fileIconFor - kept as a
+// small local duplicate (this file doesn't import from ChatScreen, and the
+// mapping is a few lines) rather than introducing a new shared-utils module
+// for one function.
+function fileIconFor(mimeType, name) {
+  const ext = String(name || '').split('.').pop()?.toLowerCase() || '';
+  if (mimeType === 'application/pdf' || ext === 'pdf') return 'document-text-outline';
+  if (['doc', 'docx'].includes(ext)) return 'document-text-outline';
+  if (['xls', 'xlsx'].includes(ext)) return 'grid-outline';
+  if (['ppt', 'pptx'].includes(ext)) return 'easel-outline';
+  if (ext === 'zip') return 'archive-outline';
+  if (ext === 'mp3' || String(mimeType || '').startsWith('audio/')) return 'musical-notes-outline';
+  if (ext === 'mp4' || String(mimeType || '').startsWith('video/')) return 'videocam-outline';
+  if (ext === 'txt') return 'document-outline';
+  return 'document-attach-outline';
+}
+
+function formatFileSize(bytes) {
+  if (!bytes || bytes <= 0) return '';
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 const SCREEN_W = Dimensions.get('window').width;
 const CELL = SCREEN_W / 3;   // square cell edge
@@ -100,9 +128,11 @@ export default function SharedMediaScreen({
   const [activeTab, setActiveTab] = useState('media');
   const [media, setMedia] = useState(EMPTY_TAB);
   const [links, setLinks] = useState(EMPTY_TAB);
+  const [docs, setDocs] = useState(EMPTY_TAB);
   const [refreshing, setRefreshing] = useState(false);
   const [viewerUri, setViewerUri] = useState(null);
   const [savingViewer, setSavingViewer] = useState(false);
+  const [openingDocId, setOpeningDocId] = useState(null);
 
   // Mirror state into refs so onEndReached / the tab effect read fresh values
   // without re-creating callbacks on every fetch.
@@ -110,11 +140,15 @@ export default function SharedMediaScreen({
   mediaRef.current = media;
   const linksRef = useRef(links);
   linksRef.current = links;
+  const docsRef = useRef(docs);
+  docsRef.current = docs;
+
+  const setterFor = (type) => (type === 'images' ? setMedia : type === 'links' ? setLinks : setDocs);
+  const refFor = (type) => (type === 'images' ? mediaRef : type === 'links' ? linksRef : docsRef).current;
 
   const load = useCallback(async (type, { append = false, refresh = false } = {}) => {
-    const isImg = type === 'images';
-    const set = isImg ? setMedia : setLinks;
-    const cur = isImg ? mediaRef.current : linksRef.current;
+    const set = setterFor(type);
+    const cur = refFor(type);
     if (cur.loading || cur.loadingMore) return;
     if (append && !cur.hasMore) return;
 
@@ -148,17 +182,49 @@ export default function SharedMediaScreen({
   useEffect(() => {
     if (activeTab === 'media' && !mediaRef.current.loaded && !mediaRef.current.loading) load('images');
     if (activeTab === 'links' && !linksRef.current.loaded && !linksRef.current.loading) load('links');
+    if (activeTab === 'docs' && !docsRef.current.loaded && !docsRef.current.loading) load('files');
   }, [activeTab, load]);
 
   const onRefresh = useCallback(async () => {
-    if (activeTab === 'docs') return;
     setRefreshing(true);
     try {
-      await load(activeTab === 'links' ? 'links' : 'images', { refresh: true });
+      await load(activeTab === 'links' ? 'links' : activeTab === 'docs' ? 'files' : 'images', { refresh: true });
     } finally {
       setRefreshing(false);
     }
   }, [activeTab, load]);
+
+  // Tapping a doc: download once to cache (skip if already there), then hand
+  // off to Android's native "Open with" app chooser via ACTION_VIEW - same
+  // mechanism and same reasoning as ChatScreen's openFileMessage (expo-
+  // sharing's ACTION_SEND share sheet was the wrong intent here; it offers
+  // apps to send the file TO, not apps that can open it).
+  const openDoc = useCallback(async (item) => {
+    if (Platform.OS !== 'android') {
+      Alert.alert('Not supported', 'Opening files is only supported on Android right now.');
+      return;
+    }
+    const fileUrl = getFileUrl(conversationId, item.id);
+    const safeName = (item.original_name || 'file').replace(/[^\w.\- ]/g, '_');
+    const localUri = `${FileSystem.cacheDirectory}wave_file_${item.id}_${safeName}`;
+    setOpeningDocId(item.id);
+    try {
+      const info = await FileSystem.getInfoAsync(localUri);
+      if (!info.exists) {
+        await FileSystem.downloadAsync(fileUrl, localUri, { headers: { Authorization: `Bearer ${token}` } });
+      }
+      const contentUri = await FileSystem.getContentUriAsync(localUri);
+      await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
+        data: contentUri,
+        flags: 1, // FLAG_GRANT_READ_URI_PERMISSION
+        type: item.mime_type || 'application/octet-stream',
+      });
+    } catch (e) {
+      Alert.alert('Could not open file', 'No app found that can open this file type.');
+    } finally {
+      setOpeningDocId(null);
+    }
+  }, [conversationId, token]);
 
   const shareImage = useCallback(async (uri) => {
     try {
@@ -239,6 +305,26 @@ export default function SharedMediaScreen({
       </View>
     );
   }, [onLongPressImage]);
+
+  const renderDocRow = useCallback(({ item }) => (
+    <TouchableOpacity
+      style={styles.linkRow}
+      activeOpacity={0.6}
+      onPress={() => openDoc(item)}
+      disabled={openingDocId === item.id}
+    >
+      {openingDocId === item.id
+        ? <ActivityIndicator size="small" color={colors.accent} style={{ marginRight: spacing.md, width: 22 }} />
+        : <Ionicons name={fileIconFor(item.mime_type, item.original_name)} size={22} color={colors.accent} style={{ marginRight: spacing.md }} />}
+      <View style={{ flex: 1 }}>
+        <Text style={styles.linkDomain} numberOfLines={1}>{item.original_name}</Text>
+        <Text style={styles.linkUrl} numberOfLines={1}>
+          {item.sender_name}{item.size ? ` \u00B7 ${formatFileSize(item.size)}` : ''}
+        </Text>
+      </View>
+      <Text style={styles.linkDate}>{shortDate(item.created_at)}</Text>
+    </TouchableOpacity>
+  ), [openDoc, openingDocId]);
 
   const renderLinkRow = useCallback(({ item }) => (
     <TouchableOpacity style={styles.linkRow} activeOpacity={0.6} onPress={() => openUrl(item.url)}>
@@ -329,7 +415,25 @@ export default function SharedMediaScreen({
         )}
 
         {activeTab === 'docs' && (
-          <EmptyState icon="document-outline" text="No documents yet" />
+          docs.loading && docs.items.length === 0 ? (
+            <ActivityIndicator style={{ marginTop: 48 }} size="large" color={colors.accent} />
+          ) : docs.error && docs.items.length === 0 ? (
+            <ErrorRetry message={docs.error} onRetry={() => load('files')} />
+          ) : (
+            <FlatList
+              data={docs.items}
+              keyExtractor={(item) => String(item.id)}
+              renderItem={renderDocRow}
+              onEndReached={() => load('files', { append: true })}
+              onEndReachedThreshold={0.3}
+              refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />}
+              ListFooterComponent={docs.loadingMore
+                ? <ActivityIndicator style={{ marginVertical: spacing.lg }} color={colors.accent} />
+                : null}
+              ListEmptyComponent={<EmptyState icon="document-outline" text="No documents yet" />}
+              contentContainerStyle={docs.items.length === 0 ? styles.emptyContainer : null}
+            />
+          )
         )}
       </View>
 

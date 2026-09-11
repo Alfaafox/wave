@@ -18,6 +18,7 @@ const PAGE = 20;
 function snippet(item) {
   if (item.message_type === 'image') return 'Photo';
   if (item.message_type === 'audio') return 'Voice message';
+  if (item.message_type === 'location') return 'Location';
   return (item.content || '').replace(/\s+/g, ' ').trim();
 }
 

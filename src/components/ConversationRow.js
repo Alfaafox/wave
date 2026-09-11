@@ -12,6 +12,9 @@ export function previewText(lastMessage) {
   if (!lastMessage) return 'No messages yet';
   if (lastMessage.message_type === 'image') return 'Photo';
   if (lastMessage.message_type === 'audio') return 'Voice message';
+  if (lastMessage.message_type === 'location') return 'Location';
+  // 'file' falls through to content, which is the original filename for a
+  // file message - already a reasonable one-line preview on its own.
   return lastMessage.content;
 }
 

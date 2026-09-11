@@ -269,6 +269,55 @@ export function updateProfilePicture(token, base64Image) {
   });
 }
 
+// File sharing. Files live on disk on the server (multer, 25MB cap; PDF/DOC/
+// DOCX/XLS/XLSX/PPT/PPTX/TXT/ZIP/MP3/MP4 only) - never base64 in a JSON body,
+// so this bypasses the shared `request()` helper (which always sets
+// Content-Type: application/json) and uses XMLHttpRequest instead of fetch
+// so `onProgress` can report real upload progress for a file that can take a
+// while over this server's plain-HTTP connection. `asset` is whatever
+// DocumentPicker.getDocumentAsync() returned: { uri, name, mimeType, size }.
+// Resolves to the server's { ok, message } response (the same shape the
+// socket 'message' event carries) - ChatScreen doesn't need to append it to
+// state itself, since the server also broadcasts it back over the socket to
+// everyone in the conversation room, including the uploader.
+export function uploadFile(token, conversationId, asset, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${SERVER_URL}/conversations/${conversationId}/files`);
+    xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+    xhr.timeout = 120000;
+
+    if (xhr.upload && onProgress) {
+      xhr.upload.onprogress = (evt) => {
+        if (evt.lengthComputable) onProgress(evt.loaded / evt.total);
+      };
+    }
+    xhr.onload = () => {
+      let data = {};
+      try { data = JSON.parse(xhr.responseText); } catch (e) { /* leave {} */ }
+      if (xhr.status >= 200 && xhr.status < 300) resolve(data);
+      else reject(new Error(data.error || 'Could not upload file'));
+    };
+    xhr.onerror = () => reject(new Error('Network error while uploading file'));
+    xhr.ontimeout = () => reject(new Error('Upload timed out - check your connection'));
+
+    const formData = new FormData();
+    formData.append('file', {
+      uri: asset.uri,
+      name: asset.name || 'file',
+      type: asset.mimeType || 'application/octet-stream',
+    });
+    xhr.send(formData);
+  });
+}
+
+// Authenticated file download URL. Not directly fetchable with a plain
+// <Image>/browser GET - the caller (ChatScreen) passes the auth header via
+// FileSystem.downloadAsync's `headers` option.
+export function getFileUrl(conversationId, fileId) {
+  return `${SERVER_URL}/conversations/${conversationId}/files/${fileId}`;
+}
+
 export function getCurrentUser(token) {
   return request('/users/me', {
     method: 'GET',
