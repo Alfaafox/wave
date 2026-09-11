@@ -34,30 +34,8 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as IntentLauncher from 'expo-intent-launcher';
 import { colors, spacing, radii } from '../theme';
 import { getSharedMedia, getFileUrl } from '../utils/api';
+import { fileIconFor, formatFileSize } from '../utils/fileDisplay';
 import ImageViewerModal from '../components/ImageViewerModal';
-
-// Same icon-per-extension mapping as ChatScreen's fileIconFor - kept as a
-// small local duplicate (this file doesn't import from ChatScreen, and the
-// mapping is a few lines) rather than introducing a new shared-utils module
-// for one function.
-function fileIconFor(mimeType, name) {
-  const ext = String(name || '').split('.').pop()?.toLowerCase() || '';
-  if (mimeType === 'application/pdf' || ext === 'pdf') return 'document-text-outline';
-  if (['doc', 'docx'].includes(ext)) return 'document-text-outline';
-  if (['xls', 'xlsx'].includes(ext)) return 'grid-outline';
-  if (['ppt', 'pptx'].includes(ext)) return 'easel-outline';
-  if (ext === 'zip') return 'archive-outline';
-  if (ext === 'mp3' || String(mimeType || '').startsWith('audio/')) return 'musical-notes-outline';
-  if (ext === 'mp4' || String(mimeType || '').startsWith('video/')) return 'videocam-outline';
-  if (ext === 'txt') return 'document-outline';
-  return 'document-attach-outline';
-}
-
-function formatFileSize(bytes) {
-  if (!bytes || bytes <= 0) return '';
-  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
 
 const SCREEN_W = Dimensions.get('window').width;
 const CELL = SCREEN_W / 3;   // square cell edge

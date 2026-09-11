@@ -31,6 +31,8 @@ import { colors, spacing, radii, typography, shadow } from '../theme';
 import { Ionicons } from '@expo/vector-icons';
 import { WALLPAPER_STORAGE_KEY, AUTOSAVE_STORAGE_KEY, getWallpaperColor } from '../utils/chatPreferences';
 import { getMuteCache, setMuteCache } from '../utils/contactPrefs';
+import { fileIconFor, formatFileSize } from '../utils/fileDisplay';
+import FilePreviewScreen from './FilePreviewScreen';
 
 const EDIT_DELETE_WINDOW_MS = 15 * 60 * 1000;
 
@@ -68,28 +70,6 @@ const ALLOWED_DOC_MIME = [
   'video/mp4',
 ];
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
-
-function formatFileSize(bytes) {
-  if (!bytes || bytes <= 0) return '';
-  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-// Icon per file type - mime first, extension as a fallback (DOCUMENT_TYPES
-// on the server can't always be trusted 1:1 to a specific client mimetype
-// string, e.g. some pickers report .doc as octet-stream).
-function fileIconFor(mimeType, name) {
-  const ext = String(name || '').split('.').pop()?.toLowerCase() || '';
-  if (mimeType === 'application/pdf' || ext === 'pdf') return 'document-text-outline';
-  if (['doc', 'docx'].includes(ext)) return 'document-text-outline';
-  if (['xls', 'xlsx'].includes(ext)) return 'grid-outline';
-  if (['ppt', 'pptx'].includes(ext)) return 'easel-outline';
-  if (ext === 'zip') return 'archive-outline';
-  if (ext === 'mp3' || String(mimeType || '').startsWith('audio/')) return 'musical-notes-outline';
-  if (ext === 'mp4' || String(mimeType || '').startsWith('video/')) return 'videocam-outline';
-  if (ext === 'txt') return 'document-outline';
-  return 'document-attach-outline';
-}
 
 function truncate(text, max) {
   const s = (text || '').replace(/\s+/g, ' ').trim();
@@ -358,6 +338,11 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
   const [fileUploadProgress, setFileUploadProgress] = useState(0);
   const [fetchingLocation, setFetchingLocation] = useState(false);
   const [downloadingFileId, setDownloadingFileId] = useState(null);
+  // WhatsApp-style confirmation step: pickDocument stages the picked asset
+  // here instead of uploading immediately - FilePreviewScreen is rendered
+  // as a full-screen overlay while this is set (see the render tree below,
+  // same conditional-overlay pattern as sharedMediaOpen).
+  const [fileToConfirm, setFileToConfirm] = useState(null);
   const [replyTo, setReplyTo] = useState(null);
   const [editingMessage, setEditingMessage] = useState(null);
   const [actionMenuFor, setActionMenuFor] = useState(null);
@@ -854,13 +839,10 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     }
   };
 
-  // Document attach (attach menu -> Document). Uploaded over REST, not the
-  // socket - see uploadFile() in api.js. No manual append to `messages` on
-  // success: the server broadcasts the inserted message back over the
-  // socket 'message' event to everyone already in the conversation room,
-  // including us (the same room-broadcast the socket path itself relies on),
-  // so the existing handleMessage listener picks it up like any other
-  // message.
+  // Document attach (attach menu -> Document). Just picks + validates the
+  // asset and stages it - it no longer uploads on pick. WhatsApp pattern:
+  // pick -> full-screen confirmation (FilePreviewScreen, rendered below
+  // while fileToConfirm is set) -> user taps Send -> confirmSendFile.
   const pickDocument = async () => {
     setAttachMenuOpen(false);
     try {
@@ -876,9 +858,30 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
         Alert.alert('File too large', 'Files can be up to 25MB.');
         return;
       }
-      setSendingFile(true);
-      setFileUploadProgress(0);
+      setFileToConfirm(asset);
+    } catch (err) {
+      Alert.alert('Could not pick file', err.message || 'Try again.');
+    }
+  };
+
+  // FilePreviewScreen's Send button. Uploaded over REST, not the socket -
+  // see uploadFile() in api.js. No manual append to `messages` on success:
+  // the server broadcasts the inserted message back over the socket
+  // 'message' event to everyone already in the conversation room, including
+  // us, so the existing handleMessage listener picks it up like any other
+  // message. A non-empty caption isn't a field on the file message itself
+  // (no server change in this pass) - it rides the existing text-message
+  // path as a normal follow-up message right after, reusing sendMessage's
+  // own socket.emit('message') logic rather than duplicating it.
+  const confirmSendFile = async (caption) => {
+    const asset = fileToConfirm;
+    if (!asset) return;
+    setSendingFile(true);
+    setFileUploadProgress(0);
+    try {
       await uploadFile(token, conversationId, asset, setFileUploadProgress);
+      if (caption) sendMessage(caption, 'text');
+      setFileToConfirm(null);
     } catch (err) {
       Alert.alert('Could not send file', err.message || 'Try again.');
     } finally {
@@ -886,6 +889,8 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
       setFileUploadProgress(0);
     }
   };
+
+  const cancelFileConfirm = () => setFileToConfirm(null);
 
   // One-shot location share (attach menu -> Location). A single current fix,
   // not live tracking - sent as a small JSON payload over the existing
@@ -2375,6 +2380,17 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
             groupName={groupName}
             onSaveImage={saveImage}
             onBack={() => { setSharedMediaOpen(false); setProfileModalOpen(true); }}
+          />
+        </View>
+      )}
+
+      {fileToConfirm && (
+        <View style={styles.notifSettingsOverlay}>
+          <FilePreviewScreen
+            file={fileToConfirm}
+            sending={sendingFile}
+            onSend={confirmSendFile}
+            onCancel={cancelFileConfirm}
           />
         </View>
       )}
