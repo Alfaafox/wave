@@ -58,6 +58,7 @@
         }
       ],
       "expo-sharing",
+      "@maplibre/maplibre-react-native",
       "./plugins/withFullScreenCall.js"
     ],
     "extra": {

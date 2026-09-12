@@ -33,6 +33,7 @@ import { WALLPAPER_STORAGE_KEY, AUTOSAVE_STORAGE_KEY, getWallpaperColor } from '
 import { getMuteCache, setMuteCache } from '../utils/contactPrefs';
 import { fileIconFor, formatFileSize } from '../utils/fileDisplay';
 import FilePreviewScreen from './FilePreviewScreen';
+import LocationPickerScreen from './LocationPickerScreen';
 
 const EDIT_DELETE_WINDOW_MS = 15 * 60 * 1000;
 
@@ -280,18 +281,23 @@ function FileBubble({ item, isMine, downloading, onPress }) {
   );
 }
 
-// message_type === 'location'. content is JSON { latitude, longitude } (see
-// shareLocation) - a one-shot pin, not live tracking. No map thumbnail: this
-// app has no maps API key and no react-native-maps dependency, and the only
-// key-less static-map image services are unauthenticated demo endpoints not
-// fit to depend on for a real feature, so the card is coordinates + a tap
-// that hands off to the device's own maps app instead of trying to render a
-// preview image.
-function LocationBubble({ item, isMine, onPress }) {
+// message_type === 'location'. content is JSON:
+//   one-shot pin:   { latitude, longitude, address? }
+//   live share:     { latitude, longitude, live, durationMs, expiresAt }
+// (see LocationPickerScreen.js / ChatScreen's startLiveLocation). A live
+// share's lat/lng/live get patched in place as liveLocation:update /
+// liveLocation:ended events land (see the socket handlers below) - this
+// component always just renders whatever's currently in item.content, live
+// or not. No map thumbnail: this app has no maps API key requirement (it
+// uses MapLibre + OSM tiles for the picker screen itself) but a *rendered*
+// static thumbnail image would still need a key-less tile/static-map
+// service, and the only ones available are unauthenticated demo endpoints
+// not fit to depend on for a real feature - so the card is address/
+// coordinates + a tap that hands off to the device's own maps app.
+function LocationBubble({ item, isMine, onPress, onStopLiveShare }) {
   let coords = null;
   try { coords = JSON.parse(item.content); } catch (e) { /* leave null */ }
   const valid = coords && typeof coords.latitude === 'number' && typeof coords.longitude === 'number';
-  const iconColor = isMine ? colors.bubbleOutgoingText : colors.accent;
 
   if (!valid) {
     return (
@@ -301,21 +307,44 @@ function LocationBubble({ item, isMine, onPress }) {
     );
   }
 
+  // durationMs is only ever present on a message that WAS (or still is) a
+  // live share - distinguishes "ended live share" from "always-was-static".
+  const wasLiveShare = coords.durationMs !== undefined;
+  const isLive = coords.live === true;
+  const expiresLabel = isLive && coords.expiresAt && !Number.isNaN(new Date(coords.expiresAt).getTime())
+    ? new Date(coords.expiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : null;
+  const subtitle = isLive
+    ? (expiresLabel ? `Live until ${expiresLabel}` : 'Live location')
+    : wasLiveShare
+    ? 'Live location ended'
+    : (coords.address || `${coords.latitude.toFixed(4)}, ${coords.longitude.toFixed(4)}`);
+  const iconColor = isLive ? colors.online : (isMine ? colors.bubbleOutgoingText : colors.accent);
+
   return (
-    <TouchableOpacity style={styles.fileRow} onPress={() => onPress(coords)} activeOpacity={0.7}>
-      <View style={[styles.fileIconWrap, isMine ? styles.fileIconWrapMine : styles.fileIconWrapTheirs]}>
-        <Ionicons name="location" size={24} color={iconColor} />
-      </View>
-      <View style={styles.fileTextCol}>
-        <Text style={[styles.fileName, { color: isMine ? colors.bubbleOutgoingText : colors.bubbleIncomingText }]}>
-          Location
-        </Text>
-        <Text style={[styles.fileMeta, { color: isMine ? 'rgba(255,255,255,0.7)' : colors.textMuted }]} numberOfLines={1}>
-          {coords.latitude.toFixed(4)}, {coords.longitude.toFixed(4)} {'\u00B7'} View on map
-        </Text>
-      </View>
-      <Ionicons name="open-outline" size={16} color={isMine ? 'rgba(255,255,255,0.7)' : colors.textMuted} />
-    </TouchableOpacity>
+    <View>
+      <TouchableOpacity style={styles.fileRow} onPress={() => onPress(coords)} activeOpacity={0.7}>
+        <View style={[styles.fileIconWrap, isMine ? styles.fileIconWrapMine : styles.fileIconWrapTheirs]}>
+          <Ionicons name={wasLiveShare ? 'navigate' : 'location'} size={24} color={iconColor} />
+        </View>
+        <View style={styles.fileTextCol}>
+          <Text style={[styles.fileName, { color: isMine ? colors.bubbleOutgoingText : colors.bubbleIncomingText }]}>
+            {wasLiveShare ? 'Live location' : 'Location'}
+          </Text>
+          <Text style={[styles.fileMeta, { color: isMine ? 'rgba(255,255,255,0.7)' : colors.textMuted }]} numberOfLines={1}>
+            {subtitle}
+          </Text>
+        </View>
+        <Ionicons name="open-outline" size={16} color={isMine ? 'rgba(255,255,255,0.7)' : colors.textMuted} />
+      </TouchableOpacity>
+      {isMine && isLive && (
+        <TouchableOpacity onPress={onStopLiveShare} style={styles.stopLiveShareRow} activeOpacity={0.7}>
+          <Text style={[styles.stopLiveShareText, { color: isMine ? colors.bubbleOutgoingText : colors.accent }]}>
+            Stop sharing
+          </Text>
+        </TouchableOpacity>
+      )}
+    </View>
   );
 }
 
@@ -336,13 +365,23 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
   const [sendingFile, setSendingFile] = useState(false);
   const [fileUploadProgress, setFileUploadProgress] = useState(0);
-  const [fetchingLocation, setFetchingLocation] = useState(false);
   const [downloadingFileId, setDownloadingFileId] = useState(null);
   // WhatsApp-style confirmation step: pickDocument stages the picked asset
   // here instead of uploading immediately - FilePreviewScreen is rendered
   // as a full-screen overlay while this is set (see the render tree below,
   // same conditional-overlay pattern as sharedMediaOpen).
   const [fileToConfirm, setFileToConfirm] = useState(null);
+  // Location sharing (Session 19). showLocationPicker renders
+  // LocationPickerScreen as the same kind of full-screen overlay.
+  // liveShare tracks the ONE live share this device may currently be
+  // broadcasting - { messageId, subscription } (subscription is the
+  // expo-location watchPositionAsync handle) or null. Mirrored into a ref
+  // because the mount/unmount effect below needs to stop the watcher on
+  // unmount without a stale closure over the state value at mount time.
+  const [showLocationPicker, setShowLocationPicker] = useState(false);
+  const [liveShare, setLiveShare] = useState(null);
+  const liveShareRef = useRef(null);
+  liveShareRef.current = liveShare;
   const [replyTo, setReplyTo] = useState(null);
   const [editingMessage, setEditingMessage] = useState(null);
   const [actionMenuFor, setActionMenuFor] = useState(null);
@@ -637,6 +676,32 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
       if (String(cid) !== String(conversationId)) return;
       setPinnedMessages((prev) => prev.filter((p) => p.message_id !== messageId));
     };
+    // Live location (Session 19): a position tick patches that one
+    // message's content in place - never a new message, and never a
+    // server round-trip to re-fetch (same "ephemeral event patches an
+    // already-rendered message" pattern as handleReactionUpdate above).
+    const patchLocationContent = (messageId, patch) => {
+      setMessages((prev) => prev.map((m) => {
+        if (m.id !== messageId) return m;
+        let data;
+        try { data = JSON.parse(m.content); } catch (e) { data = {}; }
+        return { ...m, content: JSON.stringify({ ...data, ...patch }) };
+      }));
+    };
+    const handleLiveLocationUpdate = ({ conversationId: cid, messageId, latitude, longitude }) => {
+      if (String(cid) !== String(conversationId)) return;
+      patchLocationContent(messageId, { latitude, longitude });
+    };
+    const handleLiveLocationEnded = ({ conversationId: cid, messageId }) => {
+      if (String(cid) !== String(conversationId)) return;
+      patchLocationContent(messageId, { live: false });
+      // Only meaningful for the device that was actually sharing - a no-op
+      // for every other member's liveShareRef, which is always null.
+      if (liveShareRef.current?.messageId === messageId) {
+        liveShareRef.current.subscription?.remove();
+        setLiveShare(null);
+      }
+    };
 
     socket.on('message', handleMessage);
     socket.on('reactionUpdate', handleReactionUpdate);
@@ -652,6 +717,8 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     socket.on('privateChatDisabled', handlePrivateChatOff);
     socket.on('pinnedMessage', handlePinned);
     socket.on('unpinnedMessage', handleUnpinned);
+    socket.on('liveLocation:update', handleLiveLocationUpdate);
+    socket.on('liveLocation:ended', handleLiveLocationEnded);
 
     return () => {
       isMounted = false;
@@ -669,6 +736,8 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
       socket.off('privateChatDisabled', handlePrivateChatOff);
       socket.off('pinnedMessage', handlePinned);
       socket.off('unpinnedMessage', handleUnpinned);
+      socket.off('liveLocation:update', handleLiveLocationUpdate);
+      socket.off('liveLocation:ended', handleLiveLocationEnded);
       clearTimeout(typingTimeoutRef.current);
       clearTimeout(searchDebounceRef.current);
       // Leaving the chat (unmount) - tell the other side we're done typing,
@@ -678,6 +747,14 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
       // Final catch-all read: covers a message that landed a beat before we
       // navigated back, so the list badge is right by the time it renders.
       socket.emit('markRead', conversationId);
+      // NOTE: this stops the local GPS watch (so this device stops ticking
+      // updates) but deliberately does NOT emit liveLocation:stop - leaving
+      // the chat isn't the user asking to stop sharing. The share itself
+      // keeps existing and will still expire on schedule server-side
+      // (its setTimeout doesn't depend on this socket or this screen); it
+      // just won't tick fresh positions until the chat is reopened, since
+      // nothing currently lifts the GPS watch above ChatScreen's lifetime.
+      liveShareRef.current?.subscription?.remove();
     };
   }, [conversationId, token]);
 
@@ -892,29 +969,80 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
 
   const cancelFileConfirm = () => setFileToConfirm(null);
 
-  // One-shot location share (attach menu -> Location). A single current fix,
-  // not live tracking - sent as a small JSON payload over the existing
-  // socket 'message' event (message_type: 'location'), same path as a text
-  // message. See LocationBubble for why there's no map thumbnail.
-  const shareLocation = async () => {
+  // Attach menu -> Location. LocationPickerScreen (a full-screen overlay,
+  // rendered below) does the actual picking - permission + initial GPS fix,
+  // the map + fixed pin, debounced reverse geocode, and the static/live
+  // choice. This just opens it.
+  const openLocationPicker = () => {
     setAttachMenuOpen(false);
+    setShowLocationPicker(true);
+  };
+
+  // LocationPickerScreen's "Send your current location". A one-shot pin,
+  // not live tracking - sent as JSON over the existing socket 'message'
+  // event (message_type: 'location'), same path a text message uses.
+  const handleSendStaticLocation = ({ latitude, longitude, address }) => {
+    setShowLocationPicker(false);
+    sendMessage(JSON.stringify({ latitude, longitude, address }), 'location');
+  };
+
+  // LocationPickerScreen's duration picker. The initial share message goes
+  // over the normal socket 'message' path (server validates the duration
+  // and computes expiresAt - see server.js); once it's acked, this starts a
+  // client-side GPS watch that ticks a `liveLocation:update` over the
+  // socket roughly every 15s / 20m of movement for the rest of the
+  // duration. Starting a new share while one is already running stops the
+  // old one first - one live share per device at a time.
+  const startLiveLocation = async ({ latitude, longitude, durationMs }) => {
+    setShowLocationPicker(false);
+    if (liveShareRef.current) stopLiveLocation();
     try {
       const permission = await Location.requestForegroundPermissionsAsync();
       if (!permission.granted) {
         Alert.alert('Permission needed', 'We need location access to share your location.');
         return;
       }
-      setFetchingLocation(true);
-      const position = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-      sendMessage(JSON.stringify({
-        latitude: position.coords.latitude,
-        longitude: position.coords.longitude,
-      }), 'location');
+      const content = JSON.stringify({ latitude, longitude, live: true, durationMs });
+      socketRef.current?.emit('message', { conversationId, content, messageType: 'location' }, async (response) => {
+        if (!response?.ok) {
+          Alert.alert('Could not start live location', response?.error || 'Try again.');
+          return;
+        }
+        const messageId = response.message.id;
+        try {
+          const subscription = await Location.watchPositionAsync(
+            { accuracy: Location.Accuracy.Balanced, timeInterval: 15000, distanceInterval: 20 },
+            (pos) => {
+              socketRef.current?.emit('liveLocation:update', {
+                messageId,
+                latitude: pos.coords.latitude,
+                longitude: pos.coords.longitude,
+              });
+            }
+          );
+          setLiveShare({ messageId, subscription });
+        } catch (watchErr) {
+          Alert.alert('Could not track your location', watchErr.message || 'Try again.');
+        }
+      });
     } catch (err) {
-      Alert.alert('Could not get your location', err.message || 'Make sure location services are on.');
-    } finally {
-      setFetchingLocation(false);
+      Alert.alert('Could not start live location', err.message || 'Try again.');
     }
+  };
+
+  // "Stop sharing" on one's own live-location bubble, or called internally
+  // when starting a new share supersedes an old one. Stops the local GPS
+  // watch immediately and tells the server, which persists the last known
+  // position and broadcasts liveLocation:ended to the whole room (including
+  // back to us - see server.js - so this device's own bubble updates the
+  // same way everyone else's does, via handleLiveLocationEnded below,
+  // rather than needing its own separate local-state update here).
+  const stopLiveLocation = (messageId) => {
+    const share = liveShareRef.current;
+    if (!share || (messageId != null && share.messageId !== messageId)) return;
+    share.subscription?.remove();
+    socketRef.current?.emit('liveLocation:stop', { messageId: share.messageId });
+    setLiveShare(null);
   };
 
   // Tapping a shared location opens it in the device's own maps app -
@@ -1290,6 +1418,21 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     if (msg?.message_type === 'file') {
       Alert.alert('Cannot forward files yet', 'Forwarding documents is not supported yet.');
       return;
+    }
+    // A live share re-sent through the generic forward path below would
+    // start a brand new live share in the target conversation - owned by
+    // the forwarder, with a fresh full-duration timer, but with no GPS
+    // watch behind it (only startLiveLocation arms one), so it would sit
+    // there as "Live location" and never actually tick a position. A
+    // static pin's content forwards fine as-is (WhatsApp disables
+    // forwarding a live share entirely for the same reason).
+    if (msg?.message_type === 'location') {
+      let loc = null;
+      try { loc = JSON.parse(msg.content); } catch (e) { /* leave null */ }
+      if (loc?.live) {
+        Alert.alert('Cannot forward a live location', 'Live location sharing cannot be forwarded.');
+        return;
+      }
     }
     try {
       const convos = await getConversations(token);
@@ -1881,7 +2024,12 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
                 />
               )}
               {item.message_type === 'location' && (
-                <LocationBubble item={item} isMine={isMine} onPress={openLocation} />
+                <LocationBubble
+                  item={item}
+                  isMine={isMine}
+                  onPress={openLocation}
+                  onStopLiveShare={() => stopLiveLocation(item.id)}
+                />
               )}
               {item.message_type === 'text' && (
                 <Text style={[styles.bubbleText, { color: isMine ? colors.bubbleOutgoingText : colors.bubbleIncomingText }]}>
@@ -2110,9 +2258,9 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
         <TouchableOpacity
           style={styles.attachButton}
           onPress={() => setAttachMenuOpen(true)}
-          disabled={sendingImage || sendingFile || fetchingLocation}
+          disabled={sendingImage || sendingFile}
         >
-          {(sendingImage || sendingFile || fetchingLocation)
+          {(sendingImage || sendingFile)
             ? <ActivityIndicator size="small" color={colors.accent} />
             : <Ionicons name="attach-outline" size={23} color={colors.textSecondary} />}
         </TouchableOpacity>
@@ -2167,7 +2315,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
               <Ionicons name="document-outline" size={18} color={colors.textPrimary} />
               <Text style={styles.headerMenuText}>Document</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.headerMenuItem} onPress={shareLocation}>
+            <TouchableOpacity style={styles.headerMenuItem} onPress={openLocationPicker}>
               <Ionicons name="location-outline" size={18} color={colors.textPrimary} />
               <Text style={styles.headerMenuText}>Location</Text>
             </TouchableOpacity>
@@ -2391,6 +2539,16 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
             sending={sendingFile}
             onSend={confirmSendFile}
             onCancel={cancelFileConfirm}
+          />
+        </View>
+      )}
+
+      {showLocationPicker && (
+        <View style={styles.notifSettingsOverlay}>
+          <LocationPickerScreen
+            onSendStatic={handleSendStaticLocation}
+            onStartLive={startLiveLocation}
+            onCancel={() => setShowLocationPicker(false)}
           />
         </View>
       )}
@@ -2682,6 +2840,8 @@ const styles = StyleSheet.create({
   fileTextCol: { flex: 1, marginLeft: spacing.sm, marginRight: spacing.xs },
   fileName: { fontSize: 14, fontWeight: '600' },
   fileMeta: { fontSize: 12, marginTop: 2 },
+  stopLiveShareRow: { alignItems: 'center', paddingTop: 6, paddingBottom: 2 },
+  stopLiveShareText: { fontSize: 13, fontWeight: '600', textDecorationLine: 'underline' },
 
   actionItemRow: { flexDirection: 'row', alignItems: 'center' },
   actionText: { fontSize: 16, color: colors.textPrimary },

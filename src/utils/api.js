@@ -1,4 +1,4 @@
-export const SERVER_URL = 'http://13.232.16.85:3000';
+export const SERVER_URL = 'https://waveitchat.com';
 
 async function request(path, options = {}) {
   const controller = new AbortController();

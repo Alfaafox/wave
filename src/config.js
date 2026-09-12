@@ -4,4 +4,4 @@
 // If your EC2 instance's IP address ever changes (e.g. you stop and start
 // it without an Elastic IP), update it here.
 
-export const API_URL = 'http://13.232.16.85:3000';
+export const API_URL = 'https://waveitchat.com';
