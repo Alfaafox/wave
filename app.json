@@ -59,7 +59,8 @@
       ],
       "expo-sharing",
       "@maplibre/maplibre-react-native",
-      "./plugins/withFullScreenCall.js"
+      "./plugins/withFullScreenCall.js",
+      "expo-video"
     ],
     "extra": {
       "eas": {

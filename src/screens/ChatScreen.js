@@ -16,6 +16,7 @@ import {
   AudioModule, RecordingPresets, setAudioModeAsync,
   useAudioRecorder, useAudioRecorderState, useAudioPlayer, useAudioPlayerStatus
 } from 'expo-audio';
+import { VideoView, useVideoPlayer } from 'expo-video';
 import { getMessages, getConversations, setConversationMute, setPrivateChat, searchMessages, starMessage, unstarMessage, pinMessage, unpinMessage, getPinnedMessages, uploadFile, getFileUrl, SERVER_URL } from '../utils/api';
 import { connectSocket } from '../utils/socket';
 import { ReactionPicker, ReactionPills } from '../components/MessageReactions';
@@ -81,6 +82,7 @@ function truncate(text, max) {
 function pinSnippet(p) {
   if (!p) return '';
   if (p.message_type === 'image') return 'Photo';
+  if (p.message_type === 'video') return 'Video';
   if (p.message_type === 'audio') return 'Voice message';
   if (p.message_type === 'location') return 'Location';
   if (p.message_type === 'file') return p.content || 'Document';
@@ -253,6 +255,28 @@ function AudioBubble({ uri, isMine }) {
   );
 }
 
+// message_type === 'video' (normal, not view-once): an inline player the
+// same footprint as the image bubble. Native play/pause/scrub controls;
+// the built-in fullscreen button is disabled deliberately - no new
+// full-screen video viewer was asked for here, and expo-video's fullscreen
+// mode is a separate native surface this app hasn't vetted the way
+// callManager.js/CallScreen.js vetted RTCView against RN's own <Modal>.
+function VideoBubble({ uri }) {
+  const player = useVideoPlayer(uri, (p) => {
+    p.loop = false;
+  });
+  return (
+    <VideoView
+      player={player}
+      style={styles.messageImage}
+      contentFit="cover"
+      nativeControls
+      fullscreenOptions={{ enable: false }}
+      allowsPictureInPicture={false}
+    />
+  );
+}
+
 // message_type === 'file'. `item.file_name` / `file_mime_type` / `file_size`
 // come from the LEFT JOIN message_files in GET /:id/messages (and are already
 // on the object the server broadcasts after a successful upload); `content`
@@ -356,6 +380,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
   const [typing, setTyping] = useState({ state: 'gone', userId: null, name: '' });
   const [sendingImage, setSendingImage] = useState(false);
   const [sendingCameraImage, setSendingCameraImage] = useState(false);
+  const [sendingVideo, setSendingVideo] = useState(false);
   // File sharing / location sharing (Session 18). attachMenuOpen shows the
   // Photo & Video / Document / Location popover the paperclip button opens
   // (it used to jump straight to the gallery picker). downloadingFileId is
@@ -392,11 +417,13 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
   const [showEmojiBar, setShowEmojiBar] = useState(false);
   const [viewerImage, setViewerImage] = useState(null);
   const [savingViewerImage, setSavingViewerImage] = useState(false);
-  // View-once photo compose flow (1:1 only). `stagedImage` is a picked photo
-  // held before send so the timer pills can be chosen; `viewOnceDuration` is
-  // null (off) or 0/1/3/5/10. `viewOnceViewing` is the message currently open
-  // in the full-screen ViewOnceViewer.
+  // View-once photo/video compose flow (1:1 only). `stagedImage` / `stagedVideo`
+  // is a picked photo or recorded video held before send so the timer pills
+  // can be chosen (only one of the two is ever set at a time); `viewOnceDuration`
+  // is null (off) or 0/1/3/5/10. `viewOnceViewing` is the message currently
+  // open in the full-screen ViewOnceViewer.
   const [stagedImage, setStagedImage] = useState(null);
+  const [stagedVideo, setStagedVideo] = useState(null);
   const [viewOnceDuration, setViewOnceDuration] = useState(null);
   const [viewOnceViewing, setViewOnceViewing] = useState(null);
   const [wallpaperColor, setWallpaperColor] = useState(null);
@@ -791,14 +818,17 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     setReplyTo(null);
     // Staging + view-once are one-shot per send.
     setStagedImage(null);
+    setStagedVideo(null);
     setViewOnceDuration(null);
   };
 
-  const sendStagedImage = () => {
+  const sendStagedMedia = () => {
     if (stagedImage) sendMessage(stagedImage, 'image');
+    else if (stagedVideo) sendMessage(stagedVideo, 'video');
   };
-  const clearStagedImage = () => {
+  const clearStagedMedia = () => {
     setStagedImage(null);
+    setStagedVideo(null);
     setViewOnceDuration(null);
   };
 
@@ -859,9 +889,9 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     }
   };
 
-  // Open a view-once photo. If it arrived over the socket while the chat was
-  // open its content was withheld (the socket never carries view-once images);
-  // fetch it - GET messages gates it to the unopened recipient.
+  // Open a view-once photo/video. If it arrived over the socket while the chat
+  // was open its content was withheld (the socket never carries view-once
+  // media); fetch it - GET messages gates it to the unopened recipient.
   const openViewOnce = async (item) => {
     if (item.content) { setViewOnceViewing(item); return; }
     try {
@@ -873,7 +903,43 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
         return;
       }
     } catch (e) { /* fall through */ }
-    Alert.alert('Photo unavailable', 'Could not load this photo. Try reopening the chat.');
+    const label = item.message_type === 'video' ? 'video' : 'photo';
+    Alert.alert(`${label[0].toUpperCase()}${label.slice(1)} unavailable`, `Could not load this ${label}. Try reopening the chat.`);
+  };
+
+  // Recorded-video counterpart to processAndSendImage. launchCameraAsync in
+  // video mode gives a local file uri (no base64 option like the photo
+  // picker), so this reads + base64-encodes it itself before building the
+  // same data: URI convention every other media type in this app uses.
+  const processAndSendVideo = async (asset) => {
+    if (!asset?.uri) {
+      Alert.alert('Error', 'Could not read the video.');
+      return;
+    }
+    let dataUri;
+    try {
+      const base64 = await FileSystem.readAsStringAsync(asset.uri, { encoding: FileSystem.EncodingType.Base64 });
+      const ext = (asset.uri.split('?')[0].split('.').pop() || 'mp4').toLowerCase();
+      const mime = ext === 'mov' ? 'video/quicktime' : `video/${ext}`;
+      dataUri = `data:${mime};base64,${base64}`;
+    } catch (err) {
+      Alert.alert('Error', 'Could not read the video.');
+      return;
+    }
+    const approxKb = Math.round((dataUri.length * 0.75) / 1024);
+    if (approxKb > 6000) {
+      Alert.alert('Video too large', `About ${approxKb}KB. Try a shorter recording.`);
+      return;
+    }
+    // In a 1:1 chat, stage the video so the view-once timer pills can be
+    // chosen before it sends. Groups (no view-once) send straight away.
+    if (isGroup) {
+      sendMessage(dataUri, 'video');
+    } else {
+      setEditingMessage(null);
+      setViewOnceDuration(null);
+      setStagedVideo(dataUri);
+    }
   };
 
   const pickImage = async () => {
@@ -913,6 +979,31 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     } catch (err) {
       setSendingCameraImage(false);
       Alert.alert('Error taking photo', err.message);
+    }
+  };
+
+  // Attach menu -> Record Video. mediaTypes: ['videos'] (array syntax, not
+  // the deprecated MediaTypeOptions) switches launchCameraAsync into video
+  // mode; videoMaxDuration caps the clip so the base64 payload stays
+  // reasonable (see the size guard in processAndSendVideo).
+  const recordVideo = async () => {
+    setAttachMenuOpen(false);
+    try {
+      const permission = await ImagePicker.requestCameraPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert('Permission needed', 'We need camera access to record a video.');
+        return;
+      }
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ['videos'], videoMaxDuration: 30,
+      });
+      if (result.canceled) return;
+      setSendingVideo(true);
+      await processAndSendVideo(result.assets?.[0]);
+      setSendingVideo(false);
+    } catch (err) {
+      setSendingVideo(false);
+      Alert.alert('Error recording video', err.message);
     }
   };
 
@@ -1199,6 +1290,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
         const who = m.username || 'Unknown';
         let body;
         if (m.message_type === 'image') body = '[Image]';
+        else if (m.message_type === 'video') body = '[Video]';
         else if (m.message_type === 'audio') body = '[Voice Message]';
         else if (m.message_type === 'file') body = `[Document: ${(m.content || 'file').trim()}]`;
         else if (m.message_type === 'location') body = '[Location]';
@@ -1910,17 +2002,18 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
             );
           }
 
-          // View-once photo: a card, never the image inline. Not swipeable, no
-          // long-press menu - it can only be viewed, and only once.
+          // View-once photo/video: a card, never the media inline. Not
+          // swipeable, no long-press menu - it can only be viewed, and only once.
           if (item.view_once_duration != null) {
             const durLabel = item.view_once_duration === 0 ? 'View once' : `${item.view_once_duration}s`;
+            const mediaLabel = item.message_type === 'video' ? 'Video' : 'Photo';
             const viewed = item.view_once_viewed === 1;
             if (isMine || viewed) {
               return (
                 <View style={[styles.voCard, isMine ? styles.voCardMine : styles.voCardTheirs, styles.voCardSpent]}>
                   <Ionicons name="eye-off-outline" size={16} color={colors.textSecondary} style={styles.voCardIcon} />
                   <Text style={styles.voCardSpentText}>
-                    {viewed && !isMine ? 'Opened' : `Photo \u00B7 ${durLabel}`}
+                    {viewed && !isMine ? 'Opened' : `${mediaLabel} \u00B7 ${durLabel}`}
                   </Text>
                 </View>
               );
@@ -1932,7 +2025,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
                 onPress={() => openViewOnce(item)}
               >
                 <Ionicons name="eye-outline" size={16} color={colors.accent} style={styles.voCardIcon} />
-                <Text style={styles.voCardOpenText}>{`Photo \u00B7 ${durLabel}`}</Text>
+                <Text style={styles.voCardOpenText}>{`${mediaLabel} \u00B7 ${durLabel}`}</Text>
               </TouchableOpacity>
             );
           }
@@ -1990,6 +2083,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
                     ) : (
                       <>
                         {item.reply_type === 'image' && <Ionicons name="camera-outline" size={12} color={isMine ? 'rgba(255,255,255,0.85)' : colors.textSecondary} style={{ marginRight: 4 }} />}
+                        {item.reply_type === 'video' && <Ionicons name="videocam-outline" size={12} color={isMine ? 'rgba(255,255,255,0.85)' : colors.textSecondary} style={{ marginRight: 4 }} />}
                         {item.reply_type === 'audio' && <Ionicons name="mic-outline" size={12} color={isMine ? 'rgba(255,255,255,0.85)' : colors.textSecondary} style={{ marginRight: 4 }} />}
                         {item.reply_type === 'file' && <Ionicons name="document-outline" size={12} color={isMine ? 'rgba(255,255,255,0.85)' : colors.textSecondary} style={{ marginRight: 4 }} />}
                         {item.reply_type === 'location' && <Ionicons name="location-outline" size={12} color={isMine ? 'rgba(255,255,255,0.85)' : colors.textSecondary} style={{ marginRight: 4 }} />}
@@ -1998,6 +2092,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
                           numberOfLines={1}
                         >
                           {item.reply_type === 'image' ? 'Photo'
+                            : item.reply_type === 'video' ? 'Video'
                             : item.reply_type === 'audio' ? 'Voice message'
                             : item.reply_type === 'location' ? 'Location'
                             : item.reply_type === 'file' ? (item.reply_content || 'Document')
@@ -2014,6 +2109,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
                   <Image source={{ uri: item.content }} style={styles.messageImage} resizeMode="cover" />
                 </TouchableOpacity>
               )}
+              {item.message_type === 'video' && <VideoBubble uri={item.content} />}
               {item.message_type === 'audio' && <AudioBubble uri={item.content} isMine={isMine} />}
               {item.message_type === 'file' && (
                 <FileBubble
@@ -2053,7 +2149,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
 
               {/* Image / voice / file / location keep the flow meta row below
                   the content. Text renders its time + ticks inline (above). */}
-              {(item.message_type === 'image' || item.message_type === 'audio'
+              {(item.message_type === 'image' || item.message_type === 'video' || item.message_type === 'audio'
                 || item.message_type === 'file' || item.message_type === 'location') && (
                 <View style={styles.metaRow}>
                   {metaContent}
@@ -2174,6 +2270,8 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
             <Text style={styles.replyBarText} numberOfLines={1}>
               {replyTo.message_type === 'image'
                 ? 'Photo'
+                : replyTo.message_type === 'video'
+                ? 'Video'
                 : replyTo.message_type === 'audio'
                 ? 'Voice message'
                 : replyTo.message_type === 'location'
@@ -2200,11 +2298,17 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
         </View>
       )}
 
-      {stagedImage && !accountUnavailable && (
+      {(stagedImage || stagedVideo) && !accountUnavailable && (
         <View style={styles.stagedBar}>
-          <Image source={{ uri: stagedImage }} style={styles.stagedThumb} />
+          {stagedImage ? (
+            <Image source={{ uri: stagedImage }} style={styles.stagedThumb} />
+          ) : (
+            <View style={[styles.stagedThumb, styles.stagedVideoThumb]}>
+              <Ionicons name="videocam" size={16} color={colors.textMuted} />
+            </View>
+          )}
           {isGroup ? (
-            <Text style={styles.stagedHint}>Photo ready to send</Text>
+            <Text style={styles.stagedHint}>{stagedImage ? 'Photo' : 'Video'} ready to send</Text>
           ) : (
             <View style={styles.voPillRow}>
               <Ionicons name="eye-outline" size={15} color={colors.textMuted} style={{ marginRight: spacing.sm }} />
@@ -2222,7 +2326,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
               })}
             </View>
           )}
-          <TouchableOpacity onPress={clearStagedImage} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+          <TouchableOpacity onPress={clearStagedMedia} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
             <Ionicons name="close" size={18} color={colors.textMuted} />
           </TouchableOpacity>
         </View>
@@ -2258,9 +2362,9 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
         <TouchableOpacity
           style={styles.attachButton}
           onPress={() => setAttachMenuOpen(true)}
-          disabled={sendingImage || sendingFile}
+          disabled={sendingImage || sendingFile || sendingVideo}
         >
-          {(sendingImage || sendingFile)
+          {(sendingImage || sendingFile || sendingVideo)
             ? <ActivityIndicator size="small" color={colors.accent} />
             : <Ionicons name="attach-outline" size={23} color={colors.textSecondary} />}
         </TouchableOpacity>
@@ -2269,9 +2373,9 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
           <TouchableOpacity style={styles.sendButton} onPress={submitEdit}>
             <Text style={styles.sendButtonText}>Save</Text>
           </TouchableOpacity>
-        ) : stagedImage ? (
+        ) : (stagedImage || stagedVideo) ? (
           <View>
-            <TouchableOpacity style={styles.sendButtonRound} onPress={sendStagedImage}>
+            <TouchableOpacity style={styles.sendButtonRound} onPress={sendStagedMedia}>
               <Ionicons name="send" size={18} color={colors.textOnAccent} />
             </TouchableOpacity>
             {viewOnceDuration !== null && (
@@ -2310,6 +2414,10 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
             >
               <Ionicons name="image-outline" size={18} color={colors.textPrimary} />
               <Text style={styles.headerMenuText}>Photo & Video</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.headerMenuItem} onPress={recordVideo}>
+              <Ionicons name="videocam-outline" size={18} color={colors.textPrimary} />
+              <Text style={styles.headerMenuText}>Record Video</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.headerMenuItem} onPress={pickDocument}>
               <Ionicons name="document-outline" size={18} color={colors.textPrimary} />
@@ -2475,6 +2583,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
           messageId={viewOnceViewing.id}
           uri={viewOnceViewing.content}
           duration={viewOnceViewing.view_once_duration}
+          messageType={viewOnceViewing.message_type}
           onViewed={() => {
             const vid = viewOnceViewing.id;
             setMessages((prev) => prev.map((m) => (
@@ -2703,6 +2812,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface, borderTopWidth: 1, borderTopColor: colors.border,
   },
   stagedThumb: { width: 36, height: 36, borderRadius: radii.sm, marginRight: spacing.md, backgroundColor: colors.border },
+  stagedVideoThumb: { alignItems: 'center', justifyContent: 'center' },
   stagedHint: { flex: 1, fontSize: 13, color: colors.textMuted },
   voPillRow: { flex: 1, flexDirection: 'row', alignItems: 'center' },
   voPill: {

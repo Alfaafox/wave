@@ -1,10 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  Modal, View, Text, Image, TouchableOpacity, StyleSheet,
+  View, Text, Image, TouchableOpacity, StyleSheet,
   Animated, Easing, Dimensions, Platform, StatusBar,
 } from 'react-native';
 import Svg, { Circle } from 'react-native-svg';
 import { Ionicons } from '@expo/vector-icons';
+import { VideoView, useVideoPlayer } from 'expo-video';
 import { markViewOnceViewed } from '../utils/api';
 import ExpoCallAudioModule from '../../modules/expo-call-audio/src/ExpoCallAudioModule';
 
@@ -27,11 +28,21 @@ function setSecure(on) {
   }
 }
 
-// Stripped-down full-screen viewer for a view-once photo. NOT ImageViewerModal:
-// no zoom, no save, no share, and it marks the photo viewed the moment it opens.
+// Stripped-down full-screen viewer for a view-once photo or video. NOT
+// ImageViewerModal: no zoom, no save, no share, and it marks the message
+// viewed the moment it opens.
+//
+// Rendered as a plain absolutely-positioned View, NOT an RN <Modal> - same
+// reasoning as CallScreen.js's fullScreenOverlay: on Android, Modal always
+// renders inside a native Dialog window, and expo-video's VideoView (backed
+// by a SurfaceView, same family as RTCView) is known to composite
+// unreliably inside one. The caller (ChatScreen.js) already only mounts
+// this component while a view-once message is open, so a plain View gives
+// the same "cover everything" effect without the Dialog window.
 export default function ViewOnceViewer({
-  token, conversationId, messageId, uri, duration, onViewed, onClose,
+  token, conversationId, messageId, uri, duration, messageType = 'image', onViewed, onClose,
 }) {
+  const isVideo = messageType === 'video';
   const timed = typeof duration === 'number' && duration > 0;
   const progress = useRef(new Animated.Value(0)).current;
   const [remaining, setRemaining] = useState(timed ? duration : 0);
@@ -43,11 +54,21 @@ export default function ViewOnceViewer({
   const cbRef = useRef({ onViewed, onClose });
   cbRef.current = { onViewed, onClose };
 
+  // Source is null when not a video, so the player never loads the image
+  // message's uri as media. Autoplays on open (setup callback).
+  const player = useVideoPlayer(isVideo ? uri : null, (p) => {
+    p.loop = false;
+    p.play();
+  });
+
   const finish = () => {
     if (closedRef.current) return;
     closedRef.current = true;
     if (tickRef.current) clearInterval(tickRef.current);
     if (animRef.current) animRef.current.stop();
+    if (isVideo) {
+      try { player.pause(); } catch (e) { /* player already released */ }
+    }
     setSecure(false);
     cbRef.current.onViewed && cbRef.current.onViewed();
     cbRef.current.onClose && cbRef.current.onClose();
@@ -76,9 +97,18 @@ export default function ViewOnceViewer({
       }, 1000);
     }
 
+    // Untimed ("open") video: close the moment it finishes playing, since
+    // there's no ring countdown to do it. Untimed images have no natural
+    // end - the close button (X) is the only way out for those.
+    let sub;
+    if (!timed && isVideo) {
+      sub = player.addListener('playToEnd', finish);
+    }
+
     return () => {
       if (tickRef.current) clearInterval(tickRef.current);
       if (animRef.current) animRef.current.stop();
+      if (sub) sub.remove();
       setSecure(false); // safety net
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -90,11 +120,21 @@ export default function ViewOnceViewer({
   });
 
   return (
-    <Modal visible animationType="fade" onRequestClose={finish} statusBarTranslucent>
+    <View style={styles.fullScreenOverlay}>
       <View style={styles.container}>
         <Text style={styles.blockedLabel}>Screenshot blocked</Text>
 
-        <Image source={{ uri }} style={styles.image} resizeMode="contain" />
+        {isVideo ? (
+          <VideoView
+            player={player}
+            style={styles.image}
+            contentFit="contain"
+            nativeControls={false}
+            allowsPictureInPicture={false}
+          />
+        ) : (
+          <Image source={{ uri }} style={styles.image} resizeMode="contain" />
+        )}
 
         {timed ? (
           <View style={styles.ringWrap} pointerEvents="none">
@@ -133,11 +173,15 @@ export default function ViewOnceViewer({
           </TouchableOpacity>
         )}
       </View>
-    </Modal>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  fullScreenOverlay: {
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+    zIndex: 9999, elevation: 9999,
+  },
   container: { flex: 1, backgroundColor: '#000', justifyContent: 'center', alignItems: 'center' },
   image: { width: SCREEN_W, height: SCREEN_H },
   blockedLabel: {
