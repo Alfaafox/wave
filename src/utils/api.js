@@ -478,3 +478,20 @@ export function changePhoneVerifyNew(token, newPhone, otp) {
     method: 'POST', headers: authHeaders(token), body: JSON.stringify({ newPhone, otp })
   });
 }
+
+// Scheduled Messages (Phase 4, backend-only for now - no compose UI yet,
+// the date/time picker is deferred to the October native-dep rebuild).
+// getScheduledMessages lists the caller's own pending queue.
+export function getScheduledMessages(token) {
+  return request('/scheduled', { method: 'GET', headers: authHeaders(token) });
+}
+export function createScheduledMessage(token, { conversationId, content, messageType, caption, sendAt }) {
+  return request('/scheduled', {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify({ conversationId, content, messageType, caption, sendAt }),
+  });
+}
+export function cancelScheduledMessage(token, id) {
+  return request(`/scheduled/${id}`, { method: 'DELETE', headers: authHeaders(token) });
+}

@@ -14,7 +14,7 @@ import ConversationRow from '../components/ConversationRow';
 import { Ionicons } from '@expo/vector-icons';
 import { getFavourites } from '../utils/favourites';
 
-export default function ChatListScreen({ token, currentUser, presenceMap, onOpenChat, onLogout, onOpenProfile, onOpenStarred, onOpenArchived }) {
+export default function ChatListScreen({ token, currentUser, presenceMap, onOpenChat, onLogout, onOpenProfile, onOpenStarred, onOpenArchived, onOpenScheduled }) {
   const [conversations, setConversations] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
   const [starting, setStarting] = useState(false);
@@ -382,6 +382,10 @@ export default function ChatListScreen({ token, currentUser, presenceMap, onOpen
             <TouchableOpacity style={styles.menuItem} onPress={menuAction(onOpenArchived)}>
               <Ionicons name="archive-outline" size={18} color={colors.textPrimary} />
               <Text style={styles.menuItemText}>Archived</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.menuItem} onPress={menuAction(onOpenScheduled)}>
+              <Ionicons name="time-outline" size={18} color={colors.textPrimary} />
+              <Text style={styles.menuItemText}>Scheduled Messages</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.menuItem} onPress={menuAction(onOpenProfile)}>
               <Ionicons name="settings-outline" size={18} color={colors.textPrimary} />

@@ -24,6 +24,7 @@ import AppearanceSettingsScreen from './src/screens/AppearanceSettingsScreen';
 import NotificationsSettingsScreen from './src/screens/NotificationsSettingsScreen';
 import InviteFriendScreen from './src/screens/InviteFriendScreen';
 import StarredMessagesScreen from './src/screens/StarredMessagesScreen';
+import ScheduledMessagesScreen from './src/screens/ScheduledMessagesScreen';
 import ArchivedChatsScreen from './src/screens/ArchivedChatsScreen';
 import NotificationBanner from './src/components/NotificationBanner';
 import { colors } from './src/theme';
@@ -511,6 +512,7 @@ export default function App() {
               onOpenProfile={() => setScreen('settings')}
               onOpenStarred={() => setScreen('starredMessages')}
               onOpenArchived={() => setScreen('archivedChats')}
+              onOpenScheduled={() => setScreen('scheduledMessages')}
             />
           )}
           {screen === 'starredMessages' && (
@@ -518,6 +520,12 @@ export default function App() {
               token={token}
               onBack={() => setScreen('chatList')}
               onOpenChat={openChat}
+            />
+          )}
+          {screen === 'scheduledMessages' && (
+            <ScheduledMessagesScreen
+              token={token}
+              onBack={() => setScreen('chatList')}
             />
           )}
           {screen === 'archivedChats' && (
