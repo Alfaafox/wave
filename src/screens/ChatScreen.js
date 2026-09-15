@@ -391,38 +391,71 @@ function LocationBubble({ item, isMine, onPress, onStopLiveShare }) {
 // count: cropRegion updates (and CropOverlay re-renders) on every move
 // event, so the next move's cumulative dx would land on top of a base that
 // already includes the previous moves' deltas.
-function CropOverlay({ layout, cropRegion, onCropChange }) {
+function CropOverlay({ layout, initialCropRegion, onCropChange }) {
   const minSize = 0.1;
-  const dragStartRef = useRef(cropRegion);
+  // Local state drives re-renders of THIS component only - not ChatScreen.
+  const [cropRegion, setCropRegion] = useState(initialCropRegion);
+  const dragStartRef = useRef(null);
+  const cropRegionRef = useRef(cropRegion);
+  cropRegionRef.current = cropRegion;
 
-  const makeHandlePanResponder = (corner) => PanResponder.create({
-    onStartShouldSetPanResponder: () => true,
-    onPanResponderGrant: () => {
-      dragStartRef.current = cropRegion;
-    },
-    onPanResponderMove: (_, gs) => {
-      const dx = gs.dx / layout.width;
-      const dy = gs.dy / layout.height;
-      const { x, y, width, height } = dragStartRef.current;
-      if (corner === 'tl') {
-        const newX = Math.max(0, Math.min(x + dx, x + width - minSize));
-        const newY = Math.max(0, Math.min(y + dy, y + height - minSize));
-        onCropChange({ x: newX, y: newY, width: width + (x - newX), height: height + (y - newY) });
-      } else if (corner === 'tr') {
-        const newW = Math.max(minSize, Math.min(width + dx, 1 - x));
-        const newY = Math.max(0, Math.min(y + dy, y + height - minSize));
-        onCropChange({ x, y: newY, width: newW, height: height + (y - newY) });
-      } else if (corner === 'bl') {
-        const newX = Math.max(0, Math.min(x + dx, x + width - minSize));
-        const newH = Math.max(minSize, Math.min(height + dy, 1 - y));
-        onCropChange({ x: newX, y, width: width + (x - newX), height: newH });
-      } else if (corner === 'br') {
-        const newW = Math.max(minSize, Math.min(width + dx, 1 - x));
-        const newH = Math.max(minSize, Math.min(height + dy, 1 - y));
-        onCropChange({ x, y, width: newW, height: newH });
-      }
-    },
-  });
+  // Sync when crop mode is re-opened with a new initial region.
+  useEffect(() => {
+    setCropRegion(initialCropRegion);
+  }, [initialCropRegion.x, initialCropRegion.y, initialCropRegion.width, initialCropRegion.height]);
+
+  // Lazy-init ref: the reducer (4x PanResponder.create()) must run exactly
+  // ONCE for the lifetime of this component. Seeding useRef(expr) directly
+  // does NOT achieve that - the expr argument is still evaluated on every
+  // render (only the assignment is skipped after the first), so it would
+  // silently rebuild and throw away 4 PanResponders on every re-render.
+  // The `if (!x.current)` guard is what actually makes it run once.
+  const panRespondersRef = useRef(null);
+  if (!panRespondersRef.current) {
+    panRespondersRef.current = ['tl', 'tr', 'bl', 'br'].reduce((acc, corner) => {
+      acc[corner] = PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onPanResponderGrant: () => {
+          dragStartRef.current = { ...cropRegionRef.current };
+        },
+        onPanResponderMove: (_, gs) => {
+          if (!dragStartRef.current || !layout.width || !layout.height) return;
+          const dx = gs.dx / layout.width;
+          const dy = gs.dy / layout.height;
+          const { x, y, width, height } = dragStartRef.current;
+          let next;
+          if (corner === 'tl') {
+            const newX = Math.max(0, Math.min(x + dx, x + width - minSize));
+            const newY = Math.max(0, Math.min(y + dy, y + height - minSize));
+            next = { x: newX, y: newY, width: width + (x - newX), height: height + (y - newY) };
+          } else if (corner === 'tr') {
+            const newW = Math.max(minSize, Math.min(width + dx, 1 - x));
+            const newY = Math.max(0, Math.min(y + dy, y + height - minSize));
+            next = { x, y: newY, width: newW, height: height + (y - newY) };
+          } else if (corner === 'bl') {
+            const newX = Math.max(0, Math.min(x + dx, x + width - minSize));
+            const newH = Math.max(minSize, Math.min(height + dy, 1 - y));
+            next = { x: newX, y, width: width + (x - newX), height: newH };
+          } else {
+            const newW = Math.max(minSize, Math.min(width + dx, 1 - x));
+            const newH = Math.max(minSize, Math.min(height + dy, 1 - y));
+            next = { x, y, width: newW, height: newH };
+          }
+          setCropRegion(next);
+        },
+        onPanResponderRelease: () => {
+          // Only notify the parent on release - zero parent re-renders during drag.
+          if (cropRegionRef.current) onCropChange(cropRegionRef.current);
+          dragStartRef.current = null;
+        },
+        onPanResponderTerminate: () => {
+          dragStartRef.current = null;
+        },
+      });
+      return acc;
+    }, {});
+  }
+  const panResponders = panRespondersRef.current;
 
   const left = cropRegion.x * layout.width;
   const top = cropRegion.y * layout.height;
@@ -433,19 +466,15 @@ function CropOverlay({ layout, cropRegion, onCropChange }) {
 
   return (
     <View style={{ position: 'absolute', left: 0, top: 0, width: layout.width, height: layout.height }} pointerEvents="box-none">
-      {/* Dark overlay - 4 rectangles around the crop box */}
       <View style={{ position: 'absolute', left: 0, top: 0, width: layout.width, height: top, backgroundColor: 'rgba(0,0,0,0.5)' }} pointerEvents="none" />
       <View style={{ position: 'absolute', left: 0, top: top + height, width: layout.width, height: layout.height - top - height, backgroundColor: 'rgba(0,0,0,0.5)' }} pointerEvents="none" />
       <View style={{ position: 'absolute', left: 0, top, width: left, height, backgroundColor: 'rgba(0,0,0,0.5)' }} pointerEvents="none" />
       <View style={{ position: 'absolute', left: left + width, top, width: layout.width - left - width, height, backgroundColor: 'rgba(0,0,0,0.5)' }} pointerEvents="none" />
-      {/* Crop border */}
       <View style={{ position: 'absolute', left, top, width, height, borderWidth: 1.5, borderColor: '#fff' }} pointerEvents="none" />
-      {/* Rule of thirds grid lines */}
       <View style={{ position: 'absolute', left: left + width / 3, top, width: 0.5, height, backgroundColor: 'rgba(255,255,255,0.3)' }} pointerEvents="none" />
       <View style={{ position: 'absolute', left: left + (width * 2) / 3, top, width: 0.5, height, backgroundColor: 'rgba(255,255,255,0.3)' }} pointerEvents="none" />
       <View style={{ position: 'absolute', left, top: top + height / 3, width, height: 0.5, backgroundColor: 'rgba(255,255,255,0.3)' }} pointerEvents="none" />
       <View style={{ position: 'absolute', left, top: top + (height * 2) / 3, width, height: 0.5, backgroundColor: 'rgba(255,255,255,0.3)' }} pointerEvents="none" />
-      {/* Corner handles */}
       {[
         { corner: 'tl', l: left - half, t: top - half },
         { corner: 'tr', l: left + width - half, t: top - half },
@@ -454,7 +483,7 @@ function CropOverlay({ layout, cropRegion, onCropChange }) {
       ].map(({ corner, l, t }) => (
         <View
           key={corner}
-          {...makeHandlePanResponder(corner).panHandlers}
+          {...panResponders[corner].panHandlers}
           hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
           style={{
             position: 'absolute', left: l, top: t,
@@ -538,7 +567,11 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
   // imageLayout = the <Image>'s own layout box; imageDimensions = the
   // photo's natural pixel size (from onLoad).
   const [cropMode, setCropMode] = useState(false);
-  const [cropRegion, setCropRegion] = useState({ x: 0, y: 0, width: 1, height: 1 });
+  // Final crop region lives in a ref, not state - ChatScreen must never
+  // re-render because of the drag itself. CropOverlay owns its own internal
+  // state for the smooth 60fps drag and only calls onCropChange (writing
+  // here) once, on release.
+  const cropRegionRef = useRef({ x: 0, y: 0, width: 1, height: 1 });
   const [imageLayout, setImageLayout] = useState({ width: 0, height: 0 });
   const [imageDimensions, setImageDimensions] = useState({ width: 0, height: 0 });
   const [applyingCrop, setApplyingCrop] = useState(false);
@@ -1006,20 +1039,24 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
 
   const cancelCrop = () => {
     setCropMode(false);
-    setCropRegion({ x: 0, y: 0, width: 1, height: 1 });
+    cropRegionRef.current = { x: 0, y: 0, width: 1, height: 1 };
   };
 
-  // cropRegion is normalized against the actual image content (imageRect),
-  // so it maps straight onto imageDimensions (the photo's natural pixel
-  // size) with no further letterboxing correction needed here.
+  // The final crop region lives in cropRegionRef (written once, on drag
+  // release, by CropOverlay's onCropChange - see the ref requirements
+  // above), not in ChatScreen state, so this reads .current rather than a
+  // `cropRegion` variable. It's normalized against the actual image content
+  // (imageRect), so it maps straight onto imageDimensions (the photo's
+  // natural pixel size) with no further letterboxing correction needed here.
   const applyCrop = async () => {
     if (!stagedImage || !imageDimensions.width || applyingCrop) return;
     setApplyingCrop(true);
     try {
-      const originX = Math.round(cropRegion.x * imageDimensions.width);
-      const originY = Math.round(cropRegion.y * imageDimensions.height);
-      const width = Math.round(cropRegion.width * imageDimensions.width);
-      const height = Math.round(cropRegion.height * imageDimensions.height);
+      const region = cropRegionRef.current;
+      const originX = Math.round(region.x * imageDimensions.width);
+      const originY = Math.round(region.y * imageDimensions.height);
+      const width = Math.round(region.width * imageDimensions.width);
+      const height = Math.round(region.height * imageDimensions.height);
       const result = await manipulateAsync(
         stagedImage,
         [{ crop: { originX, originY, width, height } }],
@@ -2642,8 +2679,8 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
             <View style={{ position: 'absolute', left: imageRect.left, top: imageRect.top, width: imageRect.width, height: imageRect.height }}>
               <CropOverlay
                 layout={{ width: imageRect.width, height: imageRect.height }}
-                cropRegion={cropRegion}
-                onCropChange={setCropRegion}
+                initialCropRegion={cropRegionRef.current}
+                onCropChange={(r) => { cropRegionRef.current = r; }}
               />
             </View>
           )}
@@ -2662,7 +2699,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
                   style={styles.stagedImageTopBtn}
                   onPress={() => {
                     if (!imageDimensions.width) return;
-                    setCropRegion({ x: 0.05, y: 0.05, width: 0.9, height: 0.9 });
+                    cropRegionRef.current = { x: 0.05, y: 0.05, width: 0.9, height: 0.9 };
                     setCropMode(true);
                   }}
                 >
