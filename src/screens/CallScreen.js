@@ -69,18 +69,12 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
       onLocalStream: setLocalStream,
       onRemoteStream: (stream) => {
         const videoTracks = stream.getVideoTracks();
-        const audioTracks = stream.getAudioTracks();
-        console.log('[CALL] Remote stream received. Video tracks:', videoTracks.length, 'Audio tracks:', audioTracks.length);
-        videoTracks.forEach(t => console.log('[CALL] video track state:', t.readyState, 'enabled:', t.enabled));
         setRemoteStream(stream);
         setRemoteVideoTrackCount(videoTracks.length);
         setStatus('active'); // ONLY place status becomes 'active' now
       },
       onCallEnded: () => {
         onEndCall();
-      },
-      onCallState: (state) => {
-        console.log('[CALL] peer connection state:', state);
       },
     });
     callManagerRef.current = call;
@@ -92,31 +86,23 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
     const handleAccepted = () => {
       setStatus('connecting');
       if (callInfo.mode === 'outgoing') {
-        call.sendOffer().catch((err) => {
-          console.log('[CALL] ERROR in sendOffer:', err?.message, err?.stack);
-        });
+        call.sendOffer().catch(() => {});
       }
     };
     const handleAnswer = async ({ answer }) => {
       try {
         await call.handleAnswer(answer);
-      } catch (err) {
-        console.log('[CALL] ERROR in handleAnswer:', err?.message, err?.stack);
-      }
+      } catch (err) {}
     };
     const handleOffer = async ({ offer }) => {
       try {
         await call.handleOffer(offer);
-      } catch (err) {
-        console.log('[CALL] ERROR in handleOffer:', err?.message, err?.stack);
-      }
+      } catch (err) {}
     };
     const handleIceCandidate = async ({ candidate }) => {
       try {
         await call.handleIceCandidate(candidate);
-      } catch (err) {
-        console.log('[CALL] ERROR in handleIceCandidate:', err?.message, err?.stack);
-      }
+      } catch (err) {}
     };
     const handleRejected = () => { Alert.alert('Call declined'); onEndCall(); };
     const handleEnded = (payload) => {
@@ -141,7 +127,6 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
 
     if (callInfo.mode === 'outgoing') {
       call.startOutgoingCall(callInfo.targetUserId, callInfo.callType).catch((err) => {
-        console.log('[CALL] ERROR in startOutgoingCall:', err?.message, err?.stack);
         Alert.alert('Call failed', err.message);
         onEndCall();
       });
@@ -204,9 +189,7 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
           if (Array.isArray(routes) && routes.length) setAvailableRoutes(routes);
         } catch (e2) {}
       });
-    } catch (err) {
-      console.log('[CALL] WARNING - audio route listener failed:', err?.message);
-    }
+    } catch (err) {}
     return () => {
       try { sub?.remove?.(); } catch (e) {}
     };
@@ -222,9 +205,7 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
       if (Array.isArray(routes) && routes.length) setAvailableRoutes(routes);
       const route = ExpoCallAudioModule.getAudioRoute?.();
       if (route) setAudioRoute(route);
-    } catch (err) {
-      console.log('[CALL] WARNING - could not read audio route:', err?.message);
-    }
+    } catch (err) {}
   }, [status]);
 
   // Failsafe for the ring timeout. The server is authoritative and ends an
@@ -258,9 +239,7 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
       try {
         Promise.resolve(ringtonePlayer.seekTo(0)).catch(() => {});
         ringtonePlayer.play();
-      } catch (e) {
-        console.log('[CALL] ringtone play failed:', e?.message);
-      }
+      } catch (e) {}
     };
 
     Vibration.vibrate([0, 500, 500], true);
@@ -282,7 +261,6 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
     try {
       await callManagerRef.current.acceptIncomingCall(callInfo.callId, callInfo.fromUserId, callInfo.callType);
     } catch (err) {
-      console.log('[CALL] ERROR in acceptIncomingCall:', err?.message, err?.stack);
       Alert.alert('Could not accept call', err.message);
       onEndCall();
     }
@@ -306,9 +284,7 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
     try {
       ExpoCallAudioModule.setAudioRoute(next);
       setAudioRoute(next); // optimistic; the onAudioRouteChanged event confirms
-    } catch (err) {
-      console.log('[CALL] WARNING - setAudioRoute failed:', err?.message);
-    }
+    } catch (err) {}
   };
 
   // Smart audio button:
@@ -350,7 +326,6 @@ export default function CallScreen({ socket, callInfo, onEndCall }) {
     'Earpiece';
   const routeIconColor = audioRoute === 'bluetooth' ? '#4DA3FF' : '#fff';
 
-  console.log('[CALL][RENDER] status:', status, '| isVideo:', isVideo, '| remoteStream exists:', !!remoteStream, '| remoteVideoTrackCount:', remoteVideoTrackCount, '| showingRemoteVideo:', showingRemoteVideo);
   const showControls = status !== 'ringing';
 
   const statusLabel =

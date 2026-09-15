@@ -25,9 +25,6 @@ export function createCallManager(socket, { onLocalStream, onRemoteStream, onCal
 
     const connection = new RTCPeerConnection({ iceServers });
 
-    connection.oniceconnectionstatechange = () => {
-      console.log('[CALL] ICE state:', connection.iceConnectionState);
-    };
     connection.onicecandidate = (event) => {
       if (event.candidate && callId && otherUserId) {
         socket.emit('call:ice-candidate', {
@@ -39,14 +36,12 @@ export function createCallManager(socket, { onLocalStream, onRemoteStream, onCal
     };
 
     connection.ontrack = (event) => {
-      console.log('[CALL] ontrack fired - kind:', event.track.kind, 'streams:', event.streams.length);
       if (event.streams && event.streams[0]) {
         onRemoteStream(event.streams[0]);
       }
     };
 
     connection.onconnectionstatechange = () => {
-      console.log('[CALL] connection state:', connection.connectionState);
       if (onCallState) onCallState(connection.connectionState);
       if (connection.connectionState === 'disconnected' || connection.connectionState === 'failed') {
         cleanup();
@@ -74,27 +69,20 @@ export function createCallManager(socket, { onLocalStream, onRemoteStream, onCal
   function claimCallAudioSession(callType) {
     try {
       ExpoCallAudioModule.startCallAudio(callType === 'video');
-      console.log('[CALL] ExpoCallAudio started for', callType, 'call.');
     } catch (err) {
-      console.log('[CALL] WARNING - ExpoCallAudio.startCallAudio failed:', err.message);
+      // swallow - a failed audio-session claim should not block the call
     }
   }
 
   async function getLocalMedia(callType) {
-    try {
-      claimCallAudioSession(callType);
-      const stream = await mediaDevices.getUserMedia({
-        audio: true,
-        video: callType === 'video' ? { facingMode: 'user' } : false,
-      });
-      console.log('[CALL] local media acquired - tracks:', stream.getTracks().map(t => t.kind + ':' + t.readyState));
-      localStream = stream;
-      onLocalStream(stream);
-      return stream;
-    } catch (err) {
-      console.log('[CALL] getUserMedia FAILED:', err.message);
-      throw err;
-    }
+    claimCallAudioSession(callType);
+    const stream = await mediaDevices.getUserMedia({
+      audio: true,
+      video: callType === 'video' ? { facingMode: 'user' } : false,
+    });
+    localStream = stream;
+    onLocalStream(stream);
+    return stream;
   }
 
   // Drains any ICE candidates that arrived before we had a remote
@@ -116,7 +104,7 @@ export function createCallManager(socket, { onLocalStream, onRemoteStream, onCal
       try {
         await pc.addIceCandidate(new RTCIceCandidate(candidate));
       } catch (err) {
-        console.warn('[CALL] Failed to add queued ICE candidate', err);
+        // swallow - one bad candidate shouldn't stop the rest from draining
       }
     }
   }
@@ -131,16 +119,11 @@ export function createCallManager(socket, { onLocalStream, onRemoteStream, onCal
   }
 
   async function applyOffer(offer) {
-    try {
-      await pc.setRemoteDescription(new RTCSessionDescription(offer));
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      socket.emit('call:answer', { callId, targetUserId: otherUserId, answer });
-      await drainPendingIce();
-    } catch (err) {
-      console.log('[CALL] ERROR in applyOffer:', err?.message, err?.stack);
-      throw err;
-    }
+    await pc.setRemoteDescription(new RTCSessionDescription(offer));
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    socket.emit('call:answer', { callId, targetUserId: otherUserId, answer });
+    await drainPendingIce();
   }
 
   async function startOutgoingCall(targetUserId, callType) {
@@ -184,14 +167,9 @@ export function createCallManager(socket, { onLocalStream, onRemoteStream, onCal
 
   async function sendOffer() {
     if (!pc) return;
-    try {
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      socket.emit('call:offer', { callId, targetUserId: otherUserId, offer });
-    } catch (err) {
-      console.log('[CALL] ERROR in sendOffer:', err?.message, err?.stack);
-      throw err;
-    }
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    socket.emit('call:offer', { callId, targetUserId: otherUserId, offer });
   }
 
   async function acceptIncomingCall(incomingCallId, fromUserId, callType) {
@@ -229,13 +207,8 @@ export function createCallManager(socket, { onLocalStream, onRemoteStream, onCal
 
   async function handleAnswer(answer) {
     if (!pc) return;
-    try {
-      await pc.setRemoteDescription(new RTCSessionDescription(answer));
-      await drainPendingIce();
-    } catch (err) {
-      console.log('[CALL] ERROR in handleAnswer:', err?.message, err?.stack);
-      throw err;
-    }
+    await pc.setRemoteDescription(new RTCSessionDescription(answer));
+    await drainPendingIce();
   }
 
   async function handleIceCandidate(candidate) {
@@ -246,7 +219,7 @@ export function createCallManager(socket, { onLocalStream, onRemoteStream, onCal
     try {
       await pc.addIceCandidate(new RTCIceCandidate(candidate));
     } catch (err) {
-      console.warn('[CALL] Failed to add ICE candidate', err);
+      // swallow - a bad candidate shouldn't take down the call
     }
   }
 
@@ -294,7 +267,7 @@ export function createCallManager(socket, { onLocalStream, onRemoteStream, onCal
     try {
       ExpoCallAudioModule.stopCallAudio();
     } catch (err) {
-      console.log('[CALL] WARNING - ExpoCallAudio.stopCallAudio failed:', err.message);
+      // swallow - cleanup must not throw
     }
   }
 

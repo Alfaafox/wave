@@ -27,7 +27,6 @@
     "expo-video": "~57.0.4",
     "react": "19.2.3",
     "react-native": "0.86.3",
-    "react-native-incall-manager": "^4.2.2",
     "react-native-keyboard-controller": "1.21.9",
     "react-native-qrcode-svg": "^6.3.24",
     "react-native-reanimated": "4.5.1",
