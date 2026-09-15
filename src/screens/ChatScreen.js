@@ -2,11 +2,18 @@ import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react'
 import {
   View, Text, FlatList, TextInput, TouchableOpacity, StyleSheet,
   KeyboardAvoidingView, Platform, Image, Alert, ActivityIndicator,
-  Modal, Clipboard, Animated, Keyboard, PanResponder, Share, Linking
+  Modal, Clipboard, Animated, Keyboard, PanResponder, Share, Linking, ScrollView
 } from 'react-native';
 import Reanimated, { useSharedValue, useAnimatedStyle, withSpring } from 'react-native-reanimated';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as ImagePicker from 'expo-image-picker';
+// manipulateAsync (not the new useImageManipulator hook - that can't be
+// called from an event handler, only from a component's render body) is
+// still fully supported, just marked @deprecated in favour of the
+// contextual API. It explicitly accepts a base64 data: URI - which is
+// exactly what stagedImage always is (see processAndSendImage) - not just a
+// local file:// path, so no extra file write/read round-trip is needed.
+import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import * as MediaLibrary from 'expo-media-library/legacy';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as DocumentPicker from 'expo-document-picker';
@@ -372,6 +379,94 @@ function LocationBubble({ item, isMine, onPress, onStopLiveShare }) {
   );
 }
 
+// Crop overlay for the staged-image modal (see applyCrop / imageRect in
+// ChatScreen). `layout` is the actual visible-image rect in points
+// (already letterbox-corrected by the caller); cropRegion is normalized
+// 0-1 against that rect. Corner handles drag via PanResponder.
+//
+// gestureState.dx/dy are cumulative from the START of the current touch,
+// not per-frame deltas - so every move must be computed from a FIXED
+// snapshot of cropRegion taken at gesture start (dragStartRef), never from
+// the cropRegion prop itself. Re-deriving from the live prop would double
+// count: cropRegion updates (and CropOverlay re-renders) on every move
+// event, so the next move's cumulative dx would land on top of a base that
+// already includes the previous moves' deltas.
+function CropOverlay({ layout, cropRegion, onCropChange }) {
+  const minSize = 0.1;
+  const dragStartRef = useRef(cropRegion);
+
+  const makeHandlePanResponder = (corner) => PanResponder.create({
+    onStartShouldSetPanResponder: () => true,
+    onPanResponderGrant: () => {
+      dragStartRef.current = cropRegion;
+    },
+    onPanResponderMove: (_, gs) => {
+      const dx = gs.dx / layout.width;
+      const dy = gs.dy / layout.height;
+      const { x, y, width, height } = dragStartRef.current;
+      if (corner === 'tl') {
+        const newX = Math.max(0, Math.min(x + dx, x + width - minSize));
+        const newY = Math.max(0, Math.min(y + dy, y + height - minSize));
+        onCropChange({ x: newX, y: newY, width: width + (x - newX), height: height + (y - newY) });
+      } else if (corner === 'tr') {
+        const newW = Math.max(minSize, Math.min(width + dx, 1 - x));
+        const newY = Math.max(0, Math.min(y + dy, y + height - minSize));
+        onCropChange({ x, y: newY, width: newW, height: height + (y - newY) });
+      } else if (corner === 'bl') {
+        const newX = Math.max(0, Math.min(x + dx, x + width - minSize));
+        const newH = Math.max(minSize, Math.min(height + dy, 1 - y));
+        onCropChange({ x: newX, y, width: width + (x - newX), height: newH });
+      } else if (corner === 'br') {
+        const newW = Math.max(minSize, Math.min(width + dx, 1 - x));
+        const newH = Math.max(minSize, Math.min(height + dy, 1 - y));
+        onCropChange({ x, y, width: newW, height: newH });
+      }
+    },
+  });
+
+  const left = cropRegion.x * layout.width;
+  const top = cropRegion.y * layout.height;
+  const width = cropRegion.width * layout.width;
+  const height = cropRegion.height * layout.height;
+  const handleSize = 22;
+  const half = handleSize / 2;
+
+  return (
+    <View style={{ position: 'absolute', left: 0, top: 0, width: layout.width, height: layout.height }} pointerEvents="box-none">
+      {/* Dark overlay - 4 rectangles around the crop box */}
+      <View style={{ position: 'absolute', left: 0, top: 0, width: layout.width, height: top, backgroundColor: 'rgba(0,0,0,0.5)' }} pointerEvents="none" />
+      <View style={{ position: 'absolute', left: 0, top: top + height, width: layout.width, height: layout.height - top - height, backgroundColor: 'rgba(0,0,0,0.5)' }} pointerEvents="none" />
+      <View style={{ position: 'absolute', left: 0, top, width: left, height, backgroundColor: 'rgba(0,0,0,0.5)' }} pointerEvents="none" />
+      <View style={{ position: 'absolute', left: left + width, top, width: layout.width - left - width, height, backgroundColor: 'rgba(0,0,0,0.5)' }} pointerEvents="none" />
+      {/* Crop border */}
+      <View style={{ position: 'absolute', left, top, width, height, borderWidth: 1.5, borderColor: '#fff' }} pointerEvents="none" />
+      {/* Rule of thirds grid lines */}
+      <View style={{ position: 'absolute', left: left + width / 3, top, width: 0.5, height, backgroundColor: 'rgba(255,255,255,0.3)' }} pointerEvents="none" />
+      <View style={{ position: 'absolute', left: left + (width * 2) / 3, top, width: 0.5, height, backgroundColor: 'rgba(255,255,255,0.3)' }} pointerEvents="none" />
+      <View style={{ position: 'absolute', left, top: top + height / 3, width, height: 0.5, backgroundColor: 'rgba(255,255,255,0.3)' }} pointerEvents="none" />
+      <View style={{ position: 'absolute', left, top: top + (height * 2) / 3, width, height: 0.5, backgroundColor: 'rgba(255,255,255,0.3)' }} pointerEvents="none" />
+      {/* Corner handles */}
+      {[
+        { corner: 'tl', l: left - half, t: top - half },
+        { corner: 'tr', l: left + width - half, t: top - half },
+        { corner: 'bl', l: left - half, t: top + height - half },
+        { corner: 'br', l: left + width - half, t: top + height - half },
+      ].map(({ corner, l, t }) => (
+        <View
+          key={corner}
+          {...makeHandlePanResponder(corner).panHandlers}
+          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+          style={{
+            position: 'absolute', left: l, top: t,
+            width: handleSize, height: handleSize,
+            backgroundColor: '#fff', borderRadius: 3,
+          }}
+        />
+      ))}
+    </View>
+  );
+}
+
 export default function ChatScreen({ token, currentUser, conversationId, otherUser, isGroup, groupName, presenceMap, onBack, onStartCall, jumpToMessageId }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
@@ -391,6 +486,11 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
   const [sendingFile, setSendingFile] = useState(false);
   const [fileUploadProgress, setFileUploadProgress] = useState(0);
   const [downloadingFileId, setDownloadingFileId] = useState(null);
+  // Polls (group chats only). showPollCreator opens the full-screen poll
+  // composer from the attach menu; pollQuestion/pollOptions are its draft.
+  const [showPollCreator, setShowPollCreator] = useState(false);
+  const [pollQuestion, setPollQuestion] = useState('');
+  const [pollOptions, setPollOptions] = useState(['', '']);
   // WhatsApp-style confirmation step: pickDocument stages the picked asset
   // here instead of uploading immediately - FilePreviewScreen is rendered
   // as a full-screen overlay while this is set (see the render tree below,
@@ -426,6 +526,44 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
   const [stagedVideo, setStagedVideo] = useState(null);
   const [viewOnceDuration, setViewOnceDuration] = useState(null);
   const [viewOnceViewing, setViewOnceViewing] = useState(null);
+  // Full-screen staged-image preview modal (1:1 only, see the Modal below the
+  // old stagedBar). stagedCaption is local to that modal; showViewOnceOptions
+  // just toggles its timer-pill bottom sheet - the timer value itself still
+  // lives on the existing viewOnceDuration state above, shared with video.
+  const [stagedCaption, setStagedCaption] = useState('');
+  const [showViewOnceOptions, setShowViewOnceOptions] = useState(false);
+  // Crop tool for the staged-image modal. cropRegion is normalized (0-1)
+  // against the actual VISIBLE image content, not the preview box - see
+  // imageRect below, which accounts for resizeMode="contain" letterboxing.
+  // imageLayout = the <Image>'s own layout box; imageDimensions = the
+  // photo's natural pixel size (from onLoad).
+  const [cropMode, setCropMode] = useState(false);
+  const [cropRegion, setCropRegion] = useState({ x: 0, y: 0, width: 1, height: 1 });
+  const [imageLayout, setImageLayout] = useState({ width: 0, height: 0 });
+  const [imageDimensions, setImageDimensions] = useState({ width: 0, height: 0 });
+  const [applyingCrop, setApplyingCrop] = useState(false);
+
+  // The <Image> box and the photo's own aspect ratio rarely match, so
+  // resizeMode="contain" letterboxes/pillarboxes it - the crop overlay has
+  // to sit over the actual rendered pixels, not the full box, or dragging a
+  // handle into the letterboxed margin would map to a crop rectangle that
+  // doesn't correspond to real image content.
+  const imageRect = useMemo(() => {
+    const { width: boxW, height: boxH } = imageLayout;
+    const { width: imgW, height: imgH } = imageDimensions;
+    if (!boxW || !boxH || !imgW || !imgH) return { left: 0, top: 0, width: 0, height: 0 };
+    const boxAspect = boxW / boxH;
+    const imgAspect = imgW / imgH;
+    let width, height;
+    if (imgAspect > boxAspect) {
+      width = boxW;
+      height = boxW / imgAspect;
+    } else {
+      height = boxH;
+      width = boxH * imgAspect;
+    }
+    return { left: (boxW - width) / 2, top: (boxH - height) / 2, width, height };
+  }, [imageLayout.width, imageLayout.height, imageDimensions.width, imageDimensions.height]);
   const [wallpaperColor, setWallpaperColor] = useState(null);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
   const [notifSettingsOpen, setNotifSettingsOpen] = useState(false);
@@ -729,6 +867,14 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
         setLiveShare(null);
       }
     };
+    // Poll vote tallies. Server only emits this to the poll's own
+    // conversation room, so no cid filter is needed here - it just patches
+    // whichever loaded message (if any) carries that poll_id.
+    const handlePollUpdated = ({ pollId, votes }) => {
+      setMessages((prev) => prev.map((m) => (
+        m.poll_id === pollId ? { ...m, poll_votes: votes } : m
+      )));
+    };
 
     socket.on('message', handleMessage);
     socket.on('reactionUpdate', handleReactionUpdate);
@@ -746,6 +892,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     socket.on('unpinnedMessage', handleUnpinned);
     socket.on('liveLocation:update', handleLiveLocationUpdate);
     socket.on('liveLocation:ended', handleLiveLocationEnded);
+    socket.on('poll:updated', handlePollUpdated);
 
     return () => {
       isMounted = false;
@@ -765,6 +912,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
       socket.off('unpinnedMessage', handleUnpinned);
       socket.off('liveLocation:update', handleLiveLocationUpdate);
       socket.off('liveLocation:ended', handleLiveLocationEnded);
+      socket.off('poll:updated', handlePollUpdated);
       clearTimeout(typingTimeoutRef.current);
       clearTimeout(searchDebounceRef.current);
       // Leaving the chat (unmount) - tell the other side we're done typing,
@@ -793,7 +941,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     socketRef.current?.emit('typing:stop', { conversationId });
   };
 
-  const sendMessage = (content = input, messageType = 'text') => {
+  const sendMessage = (content = input, messageType = 'text', caption) => {
     if (!content.trim() && messageType === 'text') return;
     if (!socketRef.current) {
       Alert.alert('Not connected', 'Reconnecting... try again in a second.');
@@ -806,6 +954,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     const payload = { conversationId, content, messageType };
     if (replyTo) payload.replyToId = replyTo.id;
     if (viewOnceDuration !== null) payload.view_once_duration = viewOnceDuration;
+    if (caption) payload.caption = caption;
 
     socketRef.current.emit('message', payload, (response) => {
       if (!response?.ok) {
@@ -822,14 +971,89 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     setViewOnceDuration(null);
   };
 
+  // Staged video's send (small stagedBar above). Staged image has its own
+  // sendStagedImage, triggered from the full-screen preview modal instead.
   const sendStagedMedia = () => {
-    if (stagedImage) sendMessage(stagedImage, 'image');
-    else if (stagedVideo) sendMessage(stagedVideo, 'video');
+    if (stagedVideo) sendMessage(stagedVideo, 'video');
   };
   const clearStagedMedia = () => {
     setStagedImage(null);
     setStagedVideo(null);
     setViewOnceDuration(null);
+  };
+
+  // Full-screen staged-image modal's OK/send. `caption` rides sendMessage's
+  // payload.caption straight onto the image message itself - the server now
+  // has a real caption column on messages (wired end to end on the backend),
+  // so this no longer needs the confirmSendFile-style follow-up text message.
+  const sendStagedImage = () => {
+    sendMessage(stagedImage, 'image', stagedCaption);
+    setStagedImage(null);
+    setStagedCaption('');
+    setViewOnceDuration(null);
+    cancelCrop();
+  };
+  // Also the Modal's onRequestClose (Android back button) - reachable even
+  // while cropMode is true (the button that calls this is hidden then, but
+  // the hardware back button isn't), so crop state must reset here too or
+  // the next staged image would open straight into a stale crop overlay.
+  const cancelStagedImage = () => {
+    setStagedImage(null);
+    setStagedCaption('');
+    setViewOnceDuration(null);
+    cancelCrop();
+  };
+
+  const cancelCrop = () => {
+    setCropMode(false);
+    setCropRegion({ x: 0, y: 0, width: 1, height: 1 });
+  };
+
+  // cropRegion is normalized against the actual image content (imageRect),
+  // so it maps straight onto imageDimensions (the photo's natural pixel
+  // size) with no further letterboxing correction needed here.
+  const applyCrop = async () => {
+    if (!stagedImage || !imageDimensions.width || applyingCrop) return;
+    setApplyingCrop(true);
+    try {
+      const originX = Math.round(cropRegion.x * imageDimensions.width);
+      const originY = Math.round(cropRegion.y * imageDimensions.height);
+      const width = Math.round(cropRegion.width * imageDimensions.width);
+      const height = Math.round(cropRegion.height * imageDimensions.height);
+      const result = await manipulateAsync(
+        stagedImage,
+        [{ crop: { originX, originY, width, height } }],
+        { format: SaveFormat.JPEG, compress: 0.9, base64: true }
+      );
+      if (!result.base64) throw new Error('Could not read the cropped image.');
+      setStagedImage(`data:image/jpeg;base64,${result.base64}`);
+      cancelCrop();
+    } catch (err) {
+      Alert.alert('Crop failed', err.message);
+    } finally {
+      setApplyingCrop(false);
+    }
+  };
+
+  const cancelPollCreator = () => {
+    setShowPollCreator(false);
+    setPollQuestion('');
+    setPollOptions(['', '']);
+  };
+
+  const submitPoll = () => {
+    const q = pollQuestion.trim();
+    const opts = pollOptions.map((o) => o.trim()).filter(Boolean);
+    if (!q) return Alert.alert('Question required', 'Please enter a poll question.');
+    if (opts.length < 2) return Alert.alert('More options needed', 'Add at least 2 options.');
+    if (!socketRef.current) {
+      Alert.alert('Not connected', 'Reconnecting... try again in a second.');
+      return;
+    }
+    socketRef.current.emit('poll:create', { conversationId, question: q, options: opts }, (res) => {
+      if (!res?.ok) return Alert.alert('Error', res?.error || 'Could not create poll.');
+      cancelPollCreator();
+    });
   };
 
   const handleTypingInput = (text) => {
@@ -885,6 +1109,10 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     } else {
       setEditingMessage(null);
       setViewOnceDuration(null);
+      // Reset so the Crop button's `!imageDimensions.width` guard stays
+      // disabled until this image's own onLoad fires - otherwise a fast tap
+      // could crop against the PREVIOUS staged photo's leftover dimensions.
+      setImageDimensions({ width: 0, height: 0 });
       setStagedImage(dataUri);
     }
   };
@@ -2109,6 +2337,60 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
                   <Image source={{ uri: item.content }} style={styles.messageImage} resizeMode="cover" />
                 </TouchableOpacity>
               )}
+              {item.message_type === 'image' && item.caption ? (
+                <Text style={{ color: isMine ? colors.bubbleOutgoingText : colors.bubbleIncomingText, paddingHorizontal: 8, paddingBottom: 6, fontSize: 13 }}>
+                  {item.caption}
+                </Text>
+              ) : null}
+              {item.message_type === 'poll' && item.poll_options && (
+                <View style={{ padding: 10, minWidth: 220 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 10 }}>
+                    <Ionicons
+                      name="bar-chart-outline"
+                      size={15}
+                      color={isMine ? colors.bubbleOutgoingText : colors.bubbleIncomingText}
+                      style={{ marginRight: 6 }}
+                    />
+                    <Text style={{ color: isMine ? colors.bubbleOutgoingText : colors.bubbleIncomingText, fontWeight: '600', fontSize: 15, flexShrink: 1 }}>
+                      {item.poll_question}
+                    </Text>
+                  </View>
+                  {item.poll_options.map((opt, idx) => {
+                    const totalVotes = item.poll_votes?.length || 0;
+                    const optVotes = item.poll_votes?.filter((v) => v.option_index === idx).length || 0;
+                    const pct = totalVotes > 0 ? Math.round((optVotes / totalVotes) * 100) : 0;
+                    const myVote = item.poll_votes?.find((v) => v.user_id === currentUser.id)?.option_index;
+                    const voted = myVote != null;
+                    const isMyChoice = myVote === idx;
+                    return (
+                      <TouchableOpacity
+                        key={idx}
+                        onPress={() => {
+                          socketRef.current?.emit('poll:vote', { pollId: item.poll_id, optionIndex: idx }, (res) => {
+                            if (!res?.ok) Alert.alert('Error', res?.error || 'Could not vote.');
+                          });
+                        }}
+                        style={{
+                          backgroundColor: isMyChoice ? colors.accent : (isMine ? 'rgba(255,255,255,0.15)' : colors.surface),
+                          borderRadius: 8,
+                          padding: 10,
+                          marginBottom: 6,
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                        }}
+                      >
+                        <Text style={{ color: isMyChoice ? colors.textOnAccent : (isMine ? colors.bubbleOutgoingText : colors.bubbleIncomingText), flex: 1 }}>{opt}</Text>
+                        {voted && <Text style={{ color: isMyChoice ? 'rgba(255,255,255,0.7)' : (isMine ? 'rgba(255,255,255,0.7)' : colors.textSecondary), fontSize: 12, marginLeft: 8 }}>{pct}%</Text>}
+                        {isMyChoice && <Ionicons name="checkmark" size={16} color={colors.textOnAccent} style={{ marginLeft: 4 }} />}
+                      </TouchableOpacity>
+                    );
+                  })}
+                  <Text style={{ color: isMine ? 'rgba(255,255,255,0.6)' : colors.textSecondary, fontSize: 11, marginTop: 4 }}>
+                    {item.poll_votes?.length || 0} vote{item.poll_votes?.length !== 1 ? 's' : ''}
+                  </Text>
+                </View>
+              )}
               {item.message_type === 'video' && <VideoBubble uri={item.content} />}
               {item.message_type === 'audio' && <AudioBubble uri={item.content} isMine={isMine} />}
               {item.message_type === 'file' && (
@@ -2298,17 +2580,17 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
         </View>
       )}
 
-      {(stagedImage || stagedVideo) && !accountUnavailable && (
+      {/* Recorded video still uses the small staged bar (view-once pills +
+          cancel) - the full-screen modal below is image-only, per the task
+          that introduced it. Removing this for video too would leave staged
+          video with no preview and no way to cancel it. */}
+      {stagedVideo && !accountUnavailable && (
         <View style={styles.stagedBar}>
-          {stagedImage ? (
-            <Image source={{ uri: stagedImage }} style={styles.stagedThumb} />
-          ) : (
-            <View style={[styles.stagedThumb, styles.stagedVideoThumb]}>
-              <Ionicons name="videocam" size={16} color={colors.textMuted} />
-            </View>
-          )}
+          <View style={[styles.stagedThumb, styles.stagedVideoThumb]}>
+            <Ionicons name="videocam" size={16} color={colors.textMuted} />
+          </View>
           {isGroup ? (
-            <Text style={styles.stagedHint}>{stagedImage ? 'Photo' : 'Video'} ready to send</Text>
+            <Text style={styles.stagedHint}>Video ready to send</Text>
           ) : (
             <View style={styles.voPillRow}>
               <Ionicons name="eye-outline" size={15} color={colors.textMuted} style={{ marginRight: spacing.sm }} />
@@ -2331,6 +2613,160 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
           </TouchableOpacity>
         </View>
       )}
+
+      {/* Full-screen staged-image preview. Image-only (video keeps the small
+          bar above); only ever appears for 1:1 chats since processAndSendImage
+          sends group photos straight away without staging. */}
+      <Modal
+        visible={!!stagedImage}
+        animationType="slide"
+        transparent={false}
+        onRequestClose={cancelStagedImage}
+      >
+        <View style={styles.stagedImageModal}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={{ flex: 1 }}
+        >
+          {stagedImage && (
+            <Image
+              source={{ uri: stagedImage }}
+              style={styles.stagedImagePreview}
+              resizeMode="contain"
+              onLayout={(e) => setImageLayout({ width: e.nativeEvent.layout.width, height: e.nativeEvent.layout.height })}
+              onLoad={(e) => setImageDimensions({ width: e.nativeEvent.source.width, height: e.nativeEvent.source.height })}
+            />
+          )}
+
+          {cropMode && imageRect.width > 0 && (
+            <View style={{ position: 'absolute', left: imageRect.left, top: imageRect.top, width: imageRect.width, height: imageRect.height }}>
+              <CropOverlay
+                layout={{ width: imageRect.width, height: imageRect.height }}
+                cropRegion={cropRegion}
+                onCropChange={setCropRegion}
+              />
+            </View>
+          )}
+
+          {!cropMode && (
+            <>
+              <View style={styles.stagedImageTopRight}>
+                <TouchableOpacity
+                  style={styles.stagedImageTopBtn}
+                  onPress={() => Alert.alert('Coming soon', 'Drawing tools coming in next update.')}
+                >
+                  <Ionicons name="brush-outline" size={22} color="#fff" />
+                  <Text style={styles.stagedImageTopBtnLabel}>Edit</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.stagedImageTopBtn}
+                  onPress={() => {
+                    if (!imageDimensions.width) return;
+                    setCropRegion({ x: 0.05, y: 0.05, width: 0.9, height: 0.9 });
+                    setCropMode(true);
+                  }}
+                >
+                  <Ionicons name="crop-outline" size={22} color="#fff" />
+                  <Text style={styles.stagedImageTopBtnLabel}>Crop</Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.stagedImageBottom}>
+                <View style={styles.stagedImageActionRow}>
+                  <TouchableOpacity onPress={cancelStagedImage} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                    <Text style={styles.stagedImageCancelText}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={sendStagedImage} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                    <Text style={styles.stagedImageOkText}>OK</Text>
+                  </TouchableOpacity>
+                </View>
+
+                <View style={styles.stagedImageCaptionRow}>
+                  <TextInput
+                    style={styles.stagedImageCaptionInput}
+                    placeholder="Add a caption..."
+                    placeholderTextColor="rgba(255,255,255,0.55)"
+                    value={stagedCaption}
+                    onChangeText={setStagedCaption}
+                  />
+                  {!isGroup && (
+                    <TouchableOpacity
+                      style={styles.stagedImageViewOnceBtn}
+                      onPress={() => setShowViewOnceOptions(true)}
+                    >
+                      <Ionicons
+                        name="eye"
+                        size={18}
+                        color={viewOnceDuration !== null ? colors.accent : 'rgba(255,255,255,0.65)'}
+                      />
+                      {viewOnceDuration !== null && (
+                        <Ionicons name="checkmark" size={12} color={colors.accent} style={styles.stagedImageViewOnceCheck} />
+                      )}
+                    </TouchableOpacity>
+                  )}
+                  <TouchableOpacity style={styles.stagedImageSendBtn} onPress={sendStagedImage}>
+                    <Ionicons name="send" size={18} color="#fff" />
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </>
+          )}
+
+          {cropMode && (
+            <View style={styles.cropActionBar}>
+              <TouchableOpacity onPress={cancelCrop} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} disabled={applyingCrop}>
+                <Text style={styles.stagedImageCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <Text style={styles.cropActionTitle}>Crop</Text>
+              {applyingCrop ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <TouchableOpacity onPress={applyCrop} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                  <Text style={styles.stagedImageOkText}>Apply</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          )}
+
+          {/* View-once timer bottom sheet - same VIEW_ONCE_PILLS rendering and
+              the same shared viewOnceDuration state as the small stagedBar
+              above, just opened from this button instead of shown inline. */}
+          <Modal
+            visible={showViewOnceOptions}
+            transparent
+            animationType="fade"
+            onRequestClose={() => setShowViewOnceOptions(false)}
+          >
+            <TouchableOpacity
+              style={styles.viewOnceSheetOverlay}
+              activeOpacity={1}
+              onPress={() => setShowViewOnceOptions(false)}
+            >
+              <View style={styles.viewOnceSheet}>
+                <Text style={styles.viewOnceSheetTitle}>View once</Text>
+                <View style={styles.voPillRow}>
+                  {VIEW_ONCE_PILLS.map((p) => {
+                    const selected = viewOnceDuration === p.value;
+                    return (
+                      <TouchableOpacity
+                        key={p.value}
+                        onPress={() => {
+                          setViewOnceDuration(selected ? null : p.value);
+                          setShowViewOnceOptions(false);
+                        }}
+                        style={[styles.voPill, selected && styles.voPillSelected]}
+                      >
+                        <Text style={[styles.voPillText, selected && styles.voPillTextSelected]}>{p.label}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </View>
+            </TouchableOpacity>
+          </Modal>
+        </KeyboardAvoidingView>
+        </View>
+      </Modal>
 
       {!accountUnavailable && (
       <View style={styles.inputRow}>
@@ -2373,7 +2809,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
           <TouchableOpacity style={styles.sendButton} onPress={submitEdit}>
             <Text style={styles.sendButtonText}>Save</Text>
           </TouchableOpacity>
-        ) : (stagedImage || stagedVideo) ? (
+        ) : stagedVideo ? (
           <View>
             <TouchableOpacity style={styles.sendButtonRound} onPress={sendStagedMedia}>
               <Ionicons name="send" size={18} color={colors.textOnAccent} />
@@ -2427,8 +2863,88 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
               <Ionicons name="location-outline" size={18} color={colors.textPrimary} />
               <Text style={styles.headerMenuText}>Location</Text>
             </TouchableOpacity>
+            {isGroup && (
+              <TouchableOpacity
+                style={styles.headerMenuItem}
+                onPress={() => { setAttachMenuOpen(false); setShowPollCreator(true); }}
+              >
+                <Ionicons name="bar-chart-outline" size={18} color={colors.textPrimary} />
+                <Text style={styles.headerMenuText}>Poll</Text>
+              </TouchableOpacity>
+            )}
           </View>
         </TouchableOpacity>
+      </Modal>
+
+      <Modal visible={showPollCreator} animationType="slide" transparent={false} onRequestClose={cancelPollCreator}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={{ flex: 1, backgroundColor: colors.background }}
+        >
+          <View style={{ paddingHorizontal: 16, paddingTop: 50 }}>
+            {/* Header */}
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 20 }}>
+              <TouchableOpacity onPress={cancelPollCreator}>
+                <Ionicons name="close" size={24} color={colors.textPrimary} />
+              </TouchableOpacity>
+              <Text style={{ flex: 1, textAlign: 'center', fontSize: 17, fontWeight: '600', color: colors.textPrimary }}>New Poll</Text>
+              <TouchableOpacity onPress={submitPoll}>
+                <Text style={{ color: colors.accent, fontSize: 16, fontWeight: '600' }}>Send</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          {/* Up to 10 options + the question field can run past one screen -
+              scrollable so the lower options and "Add option" stay reachable
+              (the given design had no ScrollView and would clip on a normal
+              phone once a handful of options are added). */}
+          <ScrollView
+            style={{ flex: 1, paddingHorizontal: 16 }}
+            keyboardShouldPersistTaps="handled"
+            contentContainerStyle={{ paddingBottom: 24 }}
+          >
+            {/* Question */}
+            <Text style={{ color: colors.textSecondary, fontSize: 13, marginBottom: 6 }}>QUESTION</Text>
+            <TextInput
+              style={{ backgroundColor: colors.surface, color: colors.textPrimary, borderRadius: 10, padding: 12, fontSize: 15, marginBottom: 20 }}
+              placeholder="Ask a question..."
+              placeholderTextColor={colors.textSecondary}
+              value={pollQuestion}
+              onChangeText={setPollQuestion}
+              maxLength={200}
+            />
+
+            {/* Options */}
+            <Text style={{ color: colors.textSecondary, fontSize: 13, marginBottom: 6 }}>OPTIONS</Text>
+            {pollOptions.map((opt, idx) => (
+              <View key={idx} style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 10 }}>
+                <TextInput
+                  style={{ flex: 1, backgroundColor: colors.surface, color: colors.textPrimary, borderRadius: 10, padding: 12, fontSize: 15 }}
+                  placeholder={`Option ${idx + 1}`}
+                  placeholderTextColor={colors.textSecondary}
+                  value={opt}
+                  onChangeText={(val) => {
+                    const next = [...pollOptions];
+                    next[idx] = val;
+                    setPollOptions(next);
+                  }}
+                  maxLength={100}
+                />
+                {pollOptions.length > 2 && (
+                  <TouchableOpacity onPress={() => setPollOptions(pollOptions.filter((_, i) => i !== idx))} style={{ marginLeft: 8 }}>
+                    <Ionicons name="remove-circle-outline" size={22} color={colors.danger} />
+                  </TouchableOpacity>
+                )}
+              </View>
+            ))}
+            {pollOptions.length < 10 && (
+              <TouchableOpacity onPress={() => setPollOptions([...pollOptions, ''])} style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4 }}>
+                <Ionicons name="add-circle-outline" size={20} color={colors.accent} />
+                <Text style={{ color: colors.accent, marginLeft: 6, fontSize: 15 }}>Add option</Text>
+              </TouchableOpacity>
+            )}
+          </ScrollView>
+        </KeyboardAvoidingView>
       </Modal>
 
       {sendingFile && (
@@ -2828,6 +3344,54 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
     borderWidth: 1, borderColor: colors.background,
   },
+
+  // Full-screen staged-image preview modal.
+  stagedImageModal: { flex: 1, backgroundColor: '#000' },
+  stagedImagePreview: { flex: 1, width: '100%' },
+  stagedImageTopRight: {
+    position: 'absolute', top: 48, right: spacing.lg, alignItems: 'center',
+  },
+  stagedImageTopBtn: { alignItems: 'center', marginBottom: spacing.lg },
+  stagedImageTopBtnLabel: { color: '#fff', fontSize: 11, marginTop: 4 },
+  stagedImageBottom: {
+    position: 'absolute', left: 0, right: 0, bottom: 0,
+    paddingHorizontal: spacing.lg, paddingTop: spacing.md, paddingBottom: spacing.lg,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+  },
+  stagedImageActionRow: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    marginBottom: spacing.md,
+  },
+  stagedImageCancelText: { color: '#fff', fontSize: 16 },
+  stagedImageOkText: { color: colors.accent, fontSize: 16, fontWeight: '700' },
+  cropActionBar: {
+    position: 'absolute', left: 0, right: 0, bottom: 0,
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    paddingHorizontal: spacing.lg, paddingVertical: spacing.lg,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+  },
+  cropActionTitle: { color: '#fff', fontSize: 15, fontWeight: '600' },
+  stagedImageCaptionRow: { flexDirection: 'row', alignItems: 'center' },
+  stagedImageCaptionInput: {
+    flex: 1, color: '#fff', fontSize: 15, paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
+    backgroundColor: 'rgba(255,255,255,0.12)', borderRadius: radii.pill, marginRight: spacing.sm,
+  },
+  stagedImageViewOnceBtn: {
+    flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.sm, marginRight: spacing.sm,
+  },
+  stagedImageViewOnceCheck: { marginLeft: 2 },
+  stagedImageSendBtn: {
+    width: 40, height: 40, borderRadius: 20, backgroundColor: colors.accent,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  // View-once timer bottom sheet, opened from the staged-image modal.
+  viewOnceSheetOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+  viewOnceSheet: {
+    backgroundColor: colors.surface, borderTopLeftRadius: radii.lg, borderTopRightRadius: radii.lg,
+    paddingHorizontal: spacing.lg, paddingTop: spacing.lg, paddingBottom: spacing.xl,
+  },
+  viewOnceSheetTitle: { fontSize: 15, fontWeight: '700', color: colors.textPrimary, marginBottom: spacing.md },
+
   audioRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: spacing.xs, minWidth: 140 },
   audioIcon: { marginRight: spacing.sm },
   audioLabel: { fontSize: 14 },
