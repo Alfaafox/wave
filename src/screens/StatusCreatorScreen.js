@@ -26,7 +26,7 @@ import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet, Image,
   ActivityIndicator, Alert, Animated, Platform, StatusBar, PanResponder,
-  KeyboardAvoidingView, ScrollView, Modal, Dimensions,
+  KeyboardAvoidingView, Modal,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
@@ -36,7 +36,6 @@ import { VideoView, useVideoPlayer } from 'expo-video';
 import { createStatus } from '../utils/api';
 import { colors, spacing, radii, shadow } from '../theme';
 
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const TOP_INSET = Platform.OS === 'android' ? (StatusBar.currentHeight || 24) + 10 : 54;
 
 const TEXT_MAX_LEN = 500;
@@ -44,10 +43,6 @@ const MAX_IMAGE_KB = 3000;
 const MAX_VIDEO_KB = 6000;
 const NOMINATIM_USER_AGENT = 'WaveChatApp/1.0 (contact: gurudayal90@gmail.com)';
 const TRASH_THRESHOLD_Y = 0.82;
-const SWIPE_TRIGGER_PX = 40;
-const CAROUSEL_BTN_WIDTH = 84;
-const CAROUSEL_PILL_WIDTH = 76;
-const CAROUSEL_PILL_INSET = (CAROUSEL_BTN_WIDTH - CAROUSEL_PILL_WIDTH) / 2;
 
 // 8 solid preset backgrounds for text statuses - a WhatsApp/Instagram-style
 // vivid palette, distinct from theme.js's own chrome tokens.
@@ -383,11 +378,6 @@ export default function StatusCreatorScreen({ token, onDone }) {
   const sheetY = useRef(new Animated.Value(320)).current;
   const overlayOpacity = useRef(new Animated.Value(0)).current;
 
-  // Mode carousel pill
-  const pillAnim = useRef(new Animated.Value(MODES.findIndex((m) => m.key === 'camera'))).current;
-  const carouselScrollRef = useRef(null);
-  const carouselSidePad = Math.max(0, (SCREEN_WIDTH - CAROUSEL_BTN_WIDTH * MODES.length) / 2);
-
   // Trash zone show/hide + hover pulse
   const trashScale = useRef(new Animated.Value(0)).current;
   const trashPulse = useRef(new Animated.Value(1)).current;
@@ -396,14 +386,6 @@ export default function StatusCreatorScreen({ token, onDone }) {
     StatusBar.setBarStyle('light-content');
     return () => { StatusBar.setBarStyle('dark-content'); };
   }, []);
-
-  useEffect(() => {
-    Animated.timing(pillAnim, {
-      toValue: MODES.findIndex((m) => m.key === mode),
-      duration: 150,
-      useNativeDriver: true,
-    }).start();
-  }, [mode, pillAnim]);
 
   useEffect(() => {
     Animated.spring(trashScale, {
@@ -477,40 +459,15 @@ export default function StatusCreatorScreen({ token, onDone }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode]);
 
-  // Tapping a mode label just sets the mode - the carousel's own rest
-  // position is always `carouselSidePad` (see handleCarouselScrollSettle),
-  // so a tap only needs to reset the scroll in case the carousel was
-  // mid-drag when the tap landed.
+  // Tap-only mode switch - see BUG 2 in the task history: the old
+  // scroll-driven carousel (ScrollView + onScroll updating an Animated.Value
+  // via JS-thread setValue on every frame, plus a handler that always
+  // snapped back to the same rest offset) was laggy and never actually felt
+  // like it went anywhere. Four plain buttons, no ScrollView, no scroll
+  // tracking, no lag.
   const goToMode = useCallback((key) => {
     setMode(key);
-    carouselScrollRef.current?.scrollTo({ x: carouselSidePad, animated: true });
-  }, [carouselSidePad]);
-
-  // Live 1:1 pill tracking while the carousel is actively being dragged -
-  // the pill follows the finger instead of sitting static until release.
-  // Only meaningful while NOT already animating toward a tap-selected mode
-  // (that Animated.timing is driven separately, by the `mode` effect below).
-  const handleCarouselScroll = (e) => {
-    const offsetX = e.nativeEvent.contentOffset.x;
-    const restIdx = MODES.findIndex((m) => m.key === mode);
-    const continuous = clamp(restIdx + (offsetX - carouselSidePad) / CAROUSEL_BTN_WIDTH, 0, MODES.length - 1);
-    pillAnim.setValue(continuous);
-  };
-
-  const handleCarouselScrollSettle = (e) => {
-    const offsetX = e.nativeEvent.contentOffset.x;
-    const delta = offsetX - carouselSidePad;
-    const idx = MODES.findIndex((m) => m.key === mode);
-    let nextIdx = idx;
-    if (delta > SWIPE_TRIGGER_PX) nextIdx = Math.min(idx + 1, MODES.length - 1);
-    else if (delta < -SWIPE_TRIGGER_PX) nextIdx = Math.max(idx - 1, 0);
-    if (nextIdx !== idx) setMode(MODES[nextIdx].key);
-    // Always snap the pill home, even when the mode didn't change (a small
-    // swipe that didn't cross the threshold) - otherwise it'd be left
-    // wherever the live-tracking above last set it.
-    Animated.timing(pillAnim, { toValue: nextIdx, duration: 150, useNativeDriver: true }).start();
-    carouselScrollRef.current?.scrollTo({ x: carouselSidePad, animated: true });
-  };
+  }, []);
 
   // --- Stickers ------------------------------------------------------
 
@@ -608,7 +565,7 @@ export default function StatusCreatorScreen({ token, onDone }) {
     const dataUri = mode === 'photo' ? photoUri : videoUri;
     if (!dataUri) return { error: `Pick a ${mode} first.` };
 
-    const payload = { content_type: mode, content: dataUri };
+    const payload = { content_type: mode === 'photo' ? 'image' : mode, content: dataUri };
 
     const locationSticker = stickers.find((s) => s.type === 'location' && s.meta);
     if (locationSticker) payload.location = locationSticker.meta;
@@ -859,49 +816,22 @@ export default function StatusCreatorScreen({ token, onDone }) {
 
         {/* Mode carousel */}
         <View style={styles.carouselBar}>
-          <Animated.View
-            style={[
-              styles.carouselPill,
-              {
-                transform: [{
-                  translateX: pillAnim.interpolate({
-                    inputRange: MODES.map((_, i) => i),
-                    outputRange: MODES.map((_, i) => carouselSidePad + i * CAROUSEL_BTN_WIDTH + CAROUSEL_PILL_INSET),
-                  }),
-                }],
-              },
-            ]}
-            pointerEvents="none"
-          />
-          <ScrollView
-            ref={carouselScrollRef}
-            horizontal
-            centerContent
-            pagingEnabled={false}
-            showsHorizontalScrollIndicator={false}
-            scrollEventThrottle={16}
-            onScroll={handleCarouselScroll}
-            onScrollEndDrag={handleCarouselScrollSettle}
-            onMomentumScrollEnd={handleCarouselScrollSettle}
-            contentContainerStyle={{ paddingHorizontal: carouselSidePad }}
-          >
-            {MODES.map((m) => {
-              const active = mode === m.key;
-              return (
-                <TouchableOpacity
-                  key={m.key}
-                  style={styles.carouselBtn}
-                  onPress={() => goToMode(m.key)}
-                  activeOpacity={0.8}
-                  hitSlop={{ top: 8, bottom: 8, left: 0, right: 0 }}
-                >
-                  <Text style={[styles.carouselLabel, active && styles.carouselLabelActive]}>
-                    {m.label.toUpperCase()}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </ScrollView>
+          {MODES.map((m) => {
+            const active = mode === m.key;
+            return (
+              <TouchableOpacity
+                key={m.key}
+                style={[styles.carouselBtn, active && styles.carouselBtnActive]}
+                onPress={() => goToMode(m.key)}
+                activeOpacity={0.8}
+                hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+              >
+                <Text style={[styles.carouselLabel, active && styles.carouselLabelActive]}>
+                  {m.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
         </View>
 
         {/* Sticker menu bottom sheet */}
@@ -1010,7 +940,10 @@ const styles = StyleSheet.create({
   mediaEmpty: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#000' },
   mediaEmptyText: { color: 'rgba(255,255,255,0.7)', marginTop: spacing.md, fontSize: 15, fontWeight: '500' },
 
-  captionRow: { position: 'absolute', left: spacing.lg, right: spacing.lg, bottom: 64, zIndex: 15 },
+  // Same bottom as swatchRow (just above the 48px carousel, 10px gap) -
+  // caption only shows for photo/video, swatch only for text, so they never
+  // coexist and sharing the value is fine.
+  captionRow: { position: 'absolute', left: spacing.lg, right: spacing.lg, bottom: 58, zIndex: 15 },
   captionInput: {
     backgroundColor: 'rgba(0,0,0,0.45)', color: '#fff', borderRadius: radii.pill,
     paddingHorizontal: spacing.lg, paddingVertical: spacing.sm, fontSize: 14,
@@ -1050,19 +983,33 @@ const styles = StyleSheet.create({
 
   // --- Mode carousel ---
   carouselBar: {
-    height: 48, backgroundColor: '#000', justifyContent: 'center',
-  },
-  carouselPill: {
-    position: 'absolute', top: 8, width: CAROUSEL_PILL_WIDTH, height: 32,
-    borderRadius: 16, backgroundColor: '#fff',
+    flexDirection: 'row',
+    height: 48,
+    backgroundColor: '#000',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 8,
   },
   carouselBtn: {
-    width: CAROUSEL_BTN_WIDTH, height: 48, justifyContent: 'center', alignItems: 'center',
+    flex: 1,
+    height: 36,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderRadius: 18,
+  },
+  carouselBtnActive: {
+    backgroundColor: '#fff',
   },
   carouselLabel: {
-    fontSize: 12, letterSpacing: 0.8, fontWeight: '600', color: 'rgba(255,255,255,0.6)',
+    fontSize: 12,
+    letterSpacing: 0.8,
+    fontWeight: '600',
+    color: 'rgba(255,255,255,0.6)',
   },
-  carouselLabelActive: { color: '#000', fontWeight: '800' },
+  carouselLabelActive: {
+    color: '#000',
+    fontWeight: '800',
+  },
 
   // --- Sticker menu sheet ---
   sheetOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
@@ -1076,7 +1023,7 @@ const styles = StyleSheet.create({
     alignSelf: 'center', marginBottom: spacing.md,
   },
   sheetRow: { flexDirection: 'row', alignItems: 'center', height: 64 },
-  sheetRowBorder: { borderBottomWidth: 1, borderBottomColor: colors.divider },
+  sheetRowBorder: { borderBottomWidth: 1, borderBottomColor: colors.border },
   sheetRowIcon: { marginRight: spacing.md, width: 22 },
   sheetRowTitle: { fontSize: 15, fontWeight: '700', color: colors.textPrimary },
   sheetRowSubtitle: { fontSize: 13, color: colors.textSecondary, marginTop: 1 },
