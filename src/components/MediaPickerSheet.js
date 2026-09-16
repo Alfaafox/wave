@@ -27,7 +27,7 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import {
   View, Text, TextInput, FlatList, Image, TouchableOpacity,
-  StyleSheet, ActivityIndicator,
+  StyleSheet, ActivityIndicator, Animated, PanResponder, Dimensions,
 } from 'react-native';
 import { EmojiKeyboard } from 'rn-emoji-keyboard';
 import { Ionicons } from '@expo/vector-icons';
@@ -42,6 +42,15 @@ const TABS = {
 
 const GRID_COLUMNS = 3;
 const SEARCH_DEBOUNCE_MS = 400;
+
+// Drag-to-expand sheet: two height states only. Collapsed matches the
+// keyboard height (see useKeyboardHeight.js); expanded gives more room to
+// browse GIFs/stickers. screenHeight is read once at module load - fine
+// since it's only used for a fixed proportion, not live orientation tracking.
+const screenHeight = Dimensions.get('window').height;
+const EXPANDED_HEIGHT = Math.round(screenHeight * 0.72);
+const DRAG_SNAP_THRESHOLD = 30;
+const DRAG_TAP_THRESHOLD = 10;
 
 // GIPHY's API Terms of Service require a visible "Powered By GIPHY"
 // attribution wherever GIPHY content is shown. MediaGrid is rendered ONLY
@@ -160,10 +169,75 @@ export default function MediaPickerSheet({ visible, token, serverUrl, onInsertEm
   const [activeTab, setActiveTab] = useState(TABS.EMOJI);
   const { keyboardHeight } = useKeyboardHeight();
 
+  // Two height states only: collapsed (== keyboardHeight) or expanded (a
+  // fixed proportion of the screen). sheetHeight is the Animated.Value that
+  // actually drives the View's height - `expanded` is just which snap point
+  // we're tracking so the tap-toggle and keyboard-height-change effect know
+  // which way to go.
+  const [expanded, setExpanded] = useState(false);
+  const sheetHeight = useRef(new Animated.Value(keyboardHeight)).current;
+
+  const snapTo = useCallback((toExpanded) => {
+    setExpanded(toExpanded);
+    Animated.spring(sheetHeight, {
+      toValue: toExpanded ? EXPANDED_HEIGHT : keyboardHeight,
+      useNativeDriver: false,
+      friction: 9,
+      tension: 50,
+    }).start();
+  }, [sheetHeight, keyboardHeight]);
+
+  // PanResponder handlers must always see the latest `snapTo`/`expanded`
+  // (keyboardHeight can change between drags), but PanResponder.create is
+  // only called once - so route through a ref that's refreshed every render
+  // instead of recreating the responder (which would risk dropping an
+  // in-flight gesture).
+  const latestRef = useRef({ snapTo, expanded });
+  latestRef.current = { snapTo, expanded };
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onPanResponderRelease: (_evt, gestureState) => {
+        const { dy } = gestureState;
+        if (dy < -DRAG_SNAP_THRESHOLD) {
+          latestRef.current.snapTo(true);
+        } else if (dy > DRAG_SNAP_THRESHOLD) {
+          latestRef.current.snapTo(false);
+        } else if (Math.abs(dy) < DRAG_TAP_THRESHOLD) {
+          latestRef.current.snapTo(!latestRef.current.expanded);
+        }
+      },
+    })
+  ).current;
+
+  // Keyboard height can change (different device measurement settling in,
+  // third-party keyboard swap, etc.) - while collapsed, track it live so the
+  // sheet still matches the keyboard exactly. Not animated - this mirrors
+  // the keyboard's own live height, a spring here would lag behind it.
+  useEffect(() => {
+    if (!expanded) {
+      sheetHeight.setValue(keyboardHeight);
+    }
+  }, [keyboardHeight, expanded, sheetHeight]);
+
+  // Always reopen collapsed next time, regardless of how it was left.
+  useEffect(() => {
+    if (!visible) {
+      setExpanded(false);
+      sheetHeight.setValue(keyboardHeight);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible]);
+
   if (!visible) return null;
 
   return (
-    <View style={[styles.sheet, { height: keyboardHeight }]}>
+    <Animated.View style={[styles.sheet, { height: sheetHeight }]}>
+      <View style={styles.dragHandleContainer} {...panResponder.panHandlers}>
+        <View style={styles.dragHandle} />
+      </View>
       <View style={styles.tabBar}>
         <TouchableOpacity
           style={[styles.tabBtn, activeTab === TABS.EMOJI && styles.tabBtnActive]}
@@ -225,7 +299,7 @@ export default function MediaPickerSheet({ visible, token, serverUrl, onInsertEm
           />
         )}
       </View>
-    </View>
+    </Animated.View>
   );
 }
 
@@ -234,6 +308,17 @@ const styles = StyleSheet.create({
     backgroundColor: colors.background,
     borderTopWidth: 1,
     borderTopColor: colors.border,
+  },
+  dragHandleContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+  },
+  dragHandle: {
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: colors.textMuted,
   },
   tabBar: {
     flexDirection: 'row',
