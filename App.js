@@ -3,6 +3,7 @@ import { View, ActivityIndicator, Alert, AppState } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { StatusBar } from 'expo-status-bar';
 import { KeyboardProvider } from 'react-native-keyboard-controller';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as Notifications from 'expo-notifications';
 import * as ImagePicker from 'expo-image-picker';
 
@@ -485,6 +486,7 @@ export default function App() {
   const showTabBar = TAB_SCREENS.includes(screen);
 
   return (
+    <SafeAreaProvider>
     <KeyboardProvider>
       <StatusBar style="dark" />
       <View style={{ flex: 1 }}>
@@ -624,6 +626,7 @@ export default function App() {
         onPress={(data) => routeFromNotification(data)}
       />
     </KeyboardProvider>
+    </SafeAreaProvider>
   );
 }
 

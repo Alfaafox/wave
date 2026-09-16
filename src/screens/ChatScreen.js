@@ -5,6 +5,7 @@ import {
   Modal, Clipboard, Animated, Keyboard, PanResponder, Share, Linking, ScrollView
 } from 'react-native';
 import Reanimated, { useSharedValue, useAnimatedStyle, withSpring } from 'react-native-reanimated';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as ImagePicker from 'expo-image-picker';
 // manipulateAsync (not the new useImageManipulator hook - that can't be
@@ -24,7 +25,7 @@ import {
   useAudioRecorder, useAudioRecorderState, useAudioPlayer, useAudioPlayerStatus
 } from 'expo-audio';
 import { VideoView, useVideoPlayer } from 'expo-video';
-import { getMessages, getConversations, setConversationMute, setPrivateChat, searchMessages, starMessage, unstarMessage, pinMessage, unpinMessage, getPinnedMessages, uploadFile, getFileUrl, SERVER_URL } from '../utils/api';
+import { getMessages, getConversations, setConversationMute, setPrivateChat, searchMessages, starMessage, unstarMessage, pinMessage, unpinMessage, getPinnedMessages, uploadFile, getFileUrl, blockUser, SERVER_URL } from '../utils/api';
 import { connectSocket } from '../utils/socket';
 import { ReactionPicker, ReactionPills } from '../components/MessageReactions';
 import MediaPickerSheet from '../components/MediaPickerSheet';
@@ -497,6 +498,7 @@ function CropOverlay({ layout, initialCropRegion, onCropChange }) {
 }
 
 export default function ChatScreen({ token, currentUser, conversationId, otherUser, isGroup, groupName, presenceMap, onBack, onStartCall, jumpToMessageId }) {
+  const insets = useSafeAreaInsets();
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   // 3-state typing indicator for whoever last started typing in this chat.
@@ -2146,6 +2148,35 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
               <Ionicons name="share-outline" size={18} color={colors.textPrimary} />
               <Text style={styles.headerMenuText}>Export Chat</Text>
             </TouchableOpacity>
+            {!isGroup && otherUser?.id && (
+              <TouchableOpacity
+                style={styles.headerMenuItem}
+                onPress={() => {
+                  setHeaderMenuOpen(false);
+                  Alert.alert(
+                    `Block ${otherUser?.name || 'this user'}?`,
+                    'They will not be able to send you messages or calls.',
+                    [
+                      { text: 'Cancel', style: 'cancel' },
+                      {
+                        text: 'Block', style: 'destructive',
+                        onPress: async () => {
+                          try {
+                            await blockUser(token, otherUser.id);
+                            Alert.alert('Blocked', `${otherUser?.name || 'User'} has been blocked.`);
+                          } catch (err) {
+                            Alert.alert('Error', err.message || 'Could not block user.');
+                          }
+                        }
+                      }
+                    ]
+                  );
+                }}
+              >
+                <Ionicons name="ban-outline" size={18} color={colors.danger || '#ff4444'} />
+                <Text style={[styles.headerMenuText, { color: colors.danger || '#ff4444' }]}>Block</Text>
+              </TouchableOpacity>
+            )}
           </View>
         </TouchableOpacity>
       </Modal>
@@ -2806,7 +2837,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
       </Modal>
 
       {!accountUnavailable && (
-      <View style={styles.inputRow}>
+      <View style={[styles.inputRow, { paddingBottom: insets.bottom || 8 }]}>
         <TouchableOpacity
           style={styles.emojiButton}
           onPress={() => {
