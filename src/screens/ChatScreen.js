@@ -25,7 +25,7 @@ import {
   useAudioRecorder, useAudioRecorderState, useAudioPlayer, useAudioPlayerStatus
 } from 'expo-audio';
 import { VideoView, useVideoPlayer } from 'expo-video';
-import { getMessages, getConversations, setConversationMute, setPrivateChat, searchMessages, starMessage, unstarMessage, pinMessage, unpinMessage, getPinnedMessages, uploadFile, getFileUrl, blockUser, SERVER_URL } from '../utils/api';
+import { getMessages, getConversations, setConversationMute, setPrivateChat, searchMessages, starMessage, unstarMessage, pinMessage, unpinMessage, getPinnedMessages, uploadFile, getFileUrl, blockUser, leaveGroup, getGroupInfo, SERVER_URL } from '../utils/api';
 import { connectSocket } from '../utils/socket';
 import { ReactionPicker, ReactionPills } from '../components/MessageReactions';
 import MediaPickerSheet from '../components/MediaPickerSheet';
@@ -497,7 +497,7 @@ function CropOverlay({ layout, initialCropRegion, onCropChange }) {
   );
 }
 
-export default function ChatScreen({ token, currentUser, conversationId, otherUser, isGroup, groupName, presenceMap, onBack, onStartCall, jumpToMessageId, initialDraft }) {
+export default function ChatScreen({ token, currentUser, conversationId, otherUser, isGroup, groupName, presenceMap, onBack, onStartCall, jumpToMessageId, initialDraft, onOpenGroupInfo }) {
   const insets = useSafeAreaInsets();
   const [messages, setMessages] = useState([]);
   // Pre-fills the input when opened from a Status reply (App.js
@@ -545,6 +545,18 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
   const [editingMessage, setEditingMessage] = useState(null);
   const [actionMenuFor, setActionMenuFor] = useState(null);
   const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
+  // Group management (Session 21). Fetched once via getGroupInfo on mount
+  // for groups only - just enough to gate the "Only Admins Can Send
+  // Messages" input lock and drive @mention suggestions, NOT a substitute
+  // for GroupInfoScreen's own full fetch+live-socket copy of the same data.
+  const [groupIsAdmin, setGroupIsAdmin] = useState(false);
+  const [groupMessagesRestricted, setGroupMessagesRestricted] = useState(false);
+  const [groupMembers, setGroupMembers] = useState([]);
+  const [mentionQuery, setMentionQuery] = useState(null); // null = not mentioning; string = text typed after the last '@'
+  // App.js still owns `groupName` (it's activeChat.groupName, set at
+  // navigation time) - this only shadows it when a live group:infoUpdated
+  // rename arrives while the screen is already open.
+  const [groupNameOverride, setGroupNameOverride] = useState(null);
   const [forwardPickerFor, setForwardPickerFor] = useState(null);
   const [forwardTargets, setForwardTargets] = useState([]);
   const [reactionPickerFor, setReactionPickerFor] = useState(null);
@@ -653,6 +665,8 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
   const pulseAnim = useRef(new Animated.Value(1)).current;
   // Reply preview bar slide-up (0 = hidden below, 1 = in place).
   const replyBarAnim = useRef(new Animated.Value(0)).current;
+  // @mention suggestion list slide-up, same 0/1 convention.
+  const mentionAnim = useRef(new Animated.Value(0)).current;
 
   const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const recorderState = useAudioRecorderState(audioRecorder);
@@ -710,6 +724,22 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
       Alert.alert('Could not update', 'Check your connection and try again.');
     }
   };
+
+  // Group management (Session 21). Just enough of GroupInfoScreen's own
+  // fetch to gate the "Only Admins Can Send Messages" input lock and drive
+  // @mention suggestions - not live-updated here beyond the two group:*
+  // listeners below (GroupInfoScreen is the full, live-updated copy).
+  useEffect(() => {
+    if (!isGroup || !conversationId) return;
+    let cancelled = false;
+    getGroupInfo(token, conversationId).then((data) => {
+      if (cancelled) return;
+      setGroupIsAdmin(!!data.isAdmin);
+      setGroupMessagesRestricted(!!data.messagesRestricted);
+      setGroupMembers(data.members || []);
+    }).catch(() => {}); // best-effort - a failed fetch just means no input lock / no @mentions this session
+    return () => { cancelled = true; };
+  }, [isGroup, conversationId, token]);
 
   useEffect(() => {
     if (replyTo) {
@@ -914,6 +944,22 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
       )));
     };
 
+    // Group management (Session 21). Only the two events that actually need
+    // a live reaction INSIDE ChatScreen - membersAdded/memberLeft are
+    // GroupInfoScreen's concern, nothing to show here.
+    const handleGroupInfoUpdated = (data) => {
+      if (!isGroup || String(data.conversationId) !== String(conversationId)) return;
+      if (typeof data.name === 'string' && data.name) setGroupNameOverride(data.name);
+      if (typeof data.messagesRestricted === 'boolean') setGroupMessagesRestricted(data.messagesRestricted);
+    };
+    const handleGroupMemberRemoved = (data) => {
+      if (!isGroup || String(data.conversationId) !== String(conversationId)) return;
+      if (data.userId === currentUser.id) {
+        Alert.alert('Removed', 'You were removed from this group.');
+        onBack();
+      }
+    };
+
     socket.on('message', handleMessage);
     socket.on('reactionUpdate', handleReactionUpdate);
     socket.on('messageViewed', handleMessageViewed);
@@ -931,6 +977,8 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     socket.on('liveLocation:update', handleLiveLocationUpdate);
     socket.on('liveLocation:ended', handleLiveLocationEnded);
     socket.on('poll:updated', handlePollUpdated);
+    socket.on('group:infoUpdated', handleGroupInfoUpdated);
+    socket.on('group:memberRemoved', handleGroupMemberRemoved);
 
     return () => {
       isMounted = false;
@@ -951,6 +999,8 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
       socket.off('liveLocation:update', handleLiveLocationUpdate);
       socket.off('liveLocation:ended', handleLiveLocationEnded);
       socket.off('poll:updated', handlePollUpdated);
+      socket.off('group:infoUpdated', handleGroupInfoUpdated);
+      socket.off('group:memberRemoved', handleGroupMemberRemoved);
       clearTimeout(typingTimeoutRef.current);
       clearTimeout(searchDebounceRef.current);
       // Leaving the chat (unmount) - tell the other side we're done typing,
@@ -1113,6 +1163,49 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     pauseEmitRef.current = setTimeout(() => {
       socketRef.current?.emit('typing:pause', { conversationId });
     }, 1500);
+
+    // @mentions (group chats only, Session 21). "Active" mention = an '@'
+    // at a word boundary (start of string or after whitespace) with no
+    // whitespace between it and the cursor yet - the same rule any of
+    // Slack/WhatsApp/Telegram's own mention triggers use, and it's what
+    // keeps a mid-word '@' (an email address, say) from triggering this.
+    if (isGroup) {
+      const atIdx = text.lastIndexOf('@');
+      if (atIdx !== -1) {
+        const charBefore = atIdx === 0 ? ' ' : text[atIdx - 1];
+        const afterAt = text.slice(atIdx + 1);
+        if (/\s/.test(charBefore) && !/\s/.test(afterAt)) {
+          setMentionQuery(afterAt);
+        } else {
+          setMentionQuery(null);
+        }
+      } else {
+        setMentionQuery(null);
+      }
+    }
+  };
+
+  const mentionSuggestions = isGroup && mentionQuery !== null
+    ? groupMembers
+        .filter((m) => m.id !== currentUser.id && (m.name || '').toLowerCase().includes(mentionQuery.toLowerCase()))
+        .slice(0, 5)
+    : [];
+
+  useEffect(() => {
+    Animated.spring(mentionAnim, {
+      toValue: mentionSuggestions.length > 0 ? 1 : 0,
+      useNativeDriver: true, speed: 20, bounciness: 4,
+    }).start();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mentionSuggestions.length > 0]);
+
+  const handleSelectMention = (member) => {
+    const atIdx = input.lastIndexOf('@');
+    if (atIdx === -1) { setMentionQuery(null); return; }
+    const before = input.slice(0, atIdx);
+    const after = input.slice(atIdx + 1 + (mentionQuery ? mentionQuery.length : 0));
+    setInput(`${before}@${member.name} ${after}`);
+    setMentionQuery(null);
   };
 
   const formatDuration = (ms) => {
@@ -1548,7 +1641,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
   // images/voice notes are represented by a short placeholder.
   const handleExportChat = async () => {
     setHeaderMenuOpen(false);
-    const chatName = isGroup ? (groupName || 'Group chat') : (otherUser?.name || 'Chat');
+    const chatName = isGroup ? (groupNameOverride || groupName || 'Group chat') : (otherUser?.name || 'Chat');
     const lines = [...messages]
       .sort((a, b) => {
         const t = new Date(a.created_at) - new Date(b.created_at);
@@ -1579,6 +1672,32 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     } catch (e) {
       // user dismissed the share sheet, or it is unavailable - nothing to do
     }
+  };
+
+  // Header menu -> Leave Group (group chats only). Uses the group-aware
+  // POST /leave (auto-promotes a successor if we're the only admin - see
+  // routes/conversations.js), same endpoint UserProfileModal's own
+  // "Leave group" row now uses instead of the old generic delete.
+  const handleLeaveGroupFromMenu = () => {
+    setHeaderMenuOpen(false);
+    Alert.alert(
+      'Leave group?',
+      `You will stop receiving messages from "${groupNameOverride || groupName || 'this group'}".`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Leave', style: 'destructive',
+          onPress: async () => {
+            try {
+              await leaveGroup(token, conversationId);
+              onBack();
+            } catch (err) {
+              Alert.alert('Could not leave group', err.message || 'Try again.');
+            }
+          }
+        }
+      ]
+    );
   };
 
   const handleReply = () => {
@@ -1855,7 +1974,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     setInput('');
   };
 
-  const headerTitle = isGroup ? (groupName || 'Group') : (otherUser?.name || 'Chat');
+  const headerTitle = isGroup ? (groupNameOverride || groupName || 'Group') : (otherUser?.name || 'Chat');
   // Header avatar: the other party's picture for 1:1, else initials (first
   // letter of the name / group name) on the accent colour - same pattern as
   // ChatListScreen / UserProfileModal.
@@ -1871,6 +1990,13 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
   const unavailableLabel = accountStatus === 'deleted'
     ? 'This account has been deleted'
     : 'This account has been deactivated';
+
+  // "Only Admins Can Send Messages" (Session 21) - groupMessagesRestricted /
+  // groupIsAdmin come from the one-shot getGroupInfo fetch above, kept live
+  // by the group:infoUpdated socket listener. The real enforcement is
+  // server-side (server.js isMessageAllowedFor) - this is just the courtesy
+  // client-side lock so a non-admin never gets as far as a rejected send.
+  const restrictedFromSending = isGroup && groupMessagesRestricted && !groupIsAdmin;
 
   // Live presence for the other party (App.js owns `presenceMap`). Falls back
   // to the last-seen snapshot from GET /conversations. Both go null when the
@@ -2179,6 +2305,21 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
                 <Ionicons name="ban-outline" size={18} color={colors.danger || '#ff4444'} />
                 <Text style={[styles.headerMenuText, { color: colors.danger || '#ff4444' }]}>Block</Text>
               </TouchableOpacity>
+            )}
+            {isGroup && (
+              <>
+                <TouchableOpacity
+                  style={styles.headerMenuItem}
+                  onPress={() => { setHeaderMenuOpen(false); onOpenGroupInfo?.(); }}
+                >
+                  <Ionicons name="information-circle-outline" size={18} color={colors.textPrimary} />
+                  <Text style={styles.headerMenuText}>Group Info</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.headerMenuItem} onPress={handleLeaveGroupFromMenu}>
+                  <Ionicons name="log-out-outline" size={18} color={colors.danger || '#ff4444'} />
+                  <Text style={[styles.headerMenuText, { color: colors.danger || '#ff4444' }]}>Leave Group</Text>
+                </TouchableOpacity>
+              </>
             )}
           </View>
         </TouchableOpacity>
@@ -2839,7 +2980,32 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
         </View>
       </Modal>
 
-      {!accountUnavailable && (
+      {mentionSuggestions.length > 0 && (
+        <Animated.View
+          style={[
+            styles.mentionList,
+            {
+              opacity: mentionAnim,
+              transform: [{ translateY: mentionAnim.interpolate({ inputRange: [0, 1], outputRange: [16, 0] }) }],
+            },
+          ]}
+        >
+          {mentionSuggestions.map((member) => (
+            <TouchableOpacity key={member.id} style={styles.mentionRow} onPress={() => handleSelectMention(member)}>
+              {member.profilePicture ? (
+                <Image source={{ uri: member.profilePicture }} style={styles.mentionAvatar} />
+              ) : (
+                <View style={styles.mentionAvatarFallback}>
+                  <Text style={styles.mentionAvatarFallbackText}>{(member.name || '?').charAt(0).toUpperCase()}</Text>
+                </View>
+              )}
+              <Text style={styles.mentionName} numberOfLines={1}>{member.name}</Text>
+            </TouchableOpacity>
+          ))}
+        </Animated.View>
+      )}
+
+      {!accountUnavailable && !restrictedFromSending && (
       <View style={[styles.inputRow, { paddingBottom: insets.bottom || 8 }]}>
         <TouchableOpacity
           style={styles.emojiButton}
@@ -3045,6 +3211,13 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
         </View>
       )}
 
+      {restrictedFromSending && (
+        <View style={styles.unavailableBanner}>
+          <Ionicons name="lock-closed-outline" size={16} color={colors.textMuted} style={{ marginRight: spacing.sm }} />
+          <Text style={styles.unavailableText}>Only admins can send messages</Text>
+        </View>
+      )}
+
       {recorderState.isRecording && !accountUnavailable && (
         <View style={styles.recordingBanner}>
           <View style={{ flexDirection: 'row', alignItems: 'center' }}>
@@ -3187,7 +3360,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
         token={token}
         currentUser={currentUser}
         isGroup={isGroup}
-        groupName={groupName}
+        groupName={groupNameOverride || groupName}
         conversationId={conversationId}
         otherUser={otherUser}
         onStartCall={onStartCall}
@@ -3221,7 +3394,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
             conversationId={conversationId}
             otherUser={otherUser}
             isGroup={isGroup}
-            groupName={groupName}
+            groupName={groupNameOverride || groupName}
             onSaveImage={saveImage}
             onBack={() => { setSharedMediaOpen(false); setProfileModalOpen(true); }}
           />
@@ -3505,6 +3678,21 @@ const styles = StyleSheet.create({
   replyBarName: { fontSize: 12, fontWeight: '700', color: colors.textPrimary },
   replyBarNameOwn: { color: colors.accent },
   replyBarText: { fontSize: 12, color: colors.textSecondary },
+
+  mentionList: {
+    backgroundColor: colors.background,
+    borderTopLeftRadius: radii.md, borderTopRightRadius: radii.md,
+    borderTopWidth: 1, borderColor: colors.border,
+    paddingVertical: spacing.xs, ...shadow.sm,
+  },
+  mentionRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: spacing.sm, paddingHorizontal: spacing.lg },
+  mentionAvatar: { width: 30, height: 30, borderRadius: 15, marginRight: spacing.sm },
+  mentionAvatarFallback: {
+    width: 30, height: 30, borderRadius: 15, backgroundColor: colors.accent,
+    justifyContent: 'center', alignItems: 'center', marginRight: spacing.sm,
+  },
+  mentionAvatarFallbackText: { color: colors.textOnAccent, fontWeight: '700', fontSize: 13 },
+  mentionName: { fontSize: 14, color: colors.textPrimary, fontWeight: '500' },
 
   inputRow: {
     flexDirection: 'row', padding: spacing.sm, backgroundColor: colors.background,

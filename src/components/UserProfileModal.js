@@ -18,7 +18,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing, radii, typography } from '../theme';
 import {
-  getConversations, getConversationMute, getPrivacySettings, blockUser, unblockUser, deleteConversation,
+  getConversations, getConversationMute, getPrivacySettings, blockUser, unblockUser, leaveGroup,
   setPrivateChat,
 } from '../utils/api';
 import { isFavourite, toggleFavourite } from '../utils/favourites';
@@ -254,7 +254,11 @@ export default function UserProfileModal({
         onPress: async () => {
           setLeaveBusy(true);
           try {
-            await deleteConversation(token, conversationId);
+            // POST /leave, not the generic DELETE /conversations/:id - the
+            // dedicated endpoint auto-promotes a successor when the leaver
+            // is the group's only admin (see routes/conversations.js);
+            // the generic delete has no idea about roles at all.
+            await leaveGroup(token, conversationId);
             onClose();
             onLeaveGroup?.();
           } catch (err) {

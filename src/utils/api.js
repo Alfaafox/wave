@@ -516,3 +516,38 @@ export function deleteStatus(token, id) {
 export function getMyStatuses(token) {
   return request('/status/my', { method: 'GET', headers: authHeaders(token) });
 }
+
+// Group management (Session 21, routes/conversations.js). See GroupInfoScreen.js.
+export function getGroupInfo(token, conversationId) {
+  return request(`/conversations/${conversationId}/group-info`, { method: 'GET', headers: authHeaders(token) });
+}
+export function updateGroupInfo(token, conversationId, payload) {
+  return request(`/conversations/${conversationId}/group-info`, {
+    method: 'PUT', headers: authHeaders(token), body: JSON.stringify(payload),
+  });
+}
+export function addGroupMembers(token, conversationId, userIds) {
+  return request(`/conversations/${conversationId}/members`, {
+    method: 'POST', headers: authHeaders(token), body: JSON.stringify({ userIds }),
+  });
+}
+export function removeGroupMember(token, conversationId, userId) {
+  return request(`/conversations/${conversationId}/members/${userId}`, { method: 'DELETE', headers: authHeaders(token) });
+}
+export function promoteGroupMember(token, conversationId, userId) {
+  return request(`/conversations/${conversationId}/members/${userId}/promote`, { method: 'POST', headers: authHeaders(token) });
+}
+export function demoteGroupMember(token, conversationId, userId) {
+  return request(`/conversations/${conversationId}/members/${userId}/demote`, { method: 'POST', headers: authHeaders(token) });
+}
+export function leaveGroup(token, conversationId) {
+  return request(`/conversations/${conversationId}/leave`, { method: 'POST', headers: authHeaders(token) });
+}
+export function resetGroupInvite(token, conversationId) {
+  return request(`/conversations/${conversationId}/reset-invite`, { method: 'POST', headers: authHeaders(token) });
+}
+// Server route is POST /conversations/join/:token (joining mutates state),
+// not GET - matches what this function actually calls.
+export function joinGroupByToken(token, inviteToken) {
+  return request(`/conversations/join/${inviteToken}`, { method: 'POST', headers: authHeaders(token) });
+}

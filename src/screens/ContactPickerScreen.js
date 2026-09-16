@@ -9,7 +9,7 @@ import { getUserByUsername } from '../utils/api';
 import { colors, spacing, radii, shadow } from '../theme';
 
 const APP_SHARE_MESSAGE =
-  "Hey! I'm using Wave to chat — join me here: https://example.com/wave-app-link";
+  "Hey! I'm using Wave to chat - join me here: https://example.com/wave-app-link";
 
 // Same rule the server enforces (routes/users.js). A search term that matches
 // this is treated as a username and resolved via an exact-match lookup - there
@@ -21,7 +21,8 @@ export default function ContactPickerScreen({
   mode, // 'chat' | 'group'
   onClose,
   onSelectUser,      // (user) => void, used in 'chat' mode
-  onConfirmSelection // (selectedUsers[]) => void, used in 'group' mode
+  onConfirmSelection, // (selectedUsers[]) => void, used in 'group' mode
+  excludeIds,        // optional array of user ids to hide from the registered list (e.g. GroupInfoScreen's "Add Members" already-in-the-group filter)
 }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -54,11 +55,14 @@ export default function ContactPickerScreen({
     })();
   }, [token]);
 
+  const excludeSet = useMemo(() => new Set((excludeIds || []).map(String)), [excludeIds]);
+
   const filteredRegistered = useMemo(() => {
-    if (!search.trim()) return registered;
+    const base = excludeSet.size ? registered.filter((c) => !excludeSet.has(String(c.id))) : registered;
+    if (!search.trim()) return base;
     const q = search.trim().toLowerCase();
-    return registered.filter((c) => (c.contactName || '').toLowerCase().includes(q));
-  }, [registered, search]);
+    return base.filter((c) => (c.contactName || '').toLowerCase().includes(q));
+  }, [registered, search, excludeSet]);
 
   const filteredUnregistered = useMemo(() => {
     if (!search.trim()) return unregistered;
@@ -257,7 +261,7 @@ export default function ContactPickerScreen({
                   </View>
                   {mode === 'group' && (
                     <View style={[styles.checkbox, isSelected && styles.checkboxSelected]}>
-                      {isSelected && <Text style={styles.checkmark}>✓</Text>}
+                      {isSelected && <Ionicons name="checkmark" size={14} color={colors.textOnAccent} />}
                     </View>
                   )}
                 </TouchableOpacity>
@@ -347,7 +351,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center', alignItems: 'center'
   },
   checkboxSelected: { backgroundColor: colors.accent, borderColor: colors.accent },
-  checkmark: { color: colors.textOnAccent, fontSize: 14, fontWeight: '700' },
 
   inviteBtn: {
     borderWidth: 1, borderColor: colors.accent, borderRadius: radii.pill,

@@ -29,6 +29,7 @@ import ScheduledMessagesScreen from './src/screens/ScheduledMessagesScreen';
 import ArchivedChatsScreen from './src/screens/ArchivedChatsScreen';
 import StatusCreatorScreen from './src/screens/StatusCreatorScreen';
 import StatusViewerScreen from './src/screens/StatusViewerScreen';
+import GroupInfoScreen from './src/screens/GroupInfoScreen';
 import NotificationBanner from './src/components/NotificationBanner';
 import { colors } from './src/theme';
 import { disconnectSocket, connectSocket, getSocket } from './src/utils/socket';
@@ -52,6 +53,7 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState(null);
   const [activeChat, setActiveChat] = useState(null);
   const [statusViewerGroup, setStatusViewerGroup] = useState(null);
+  const [groupInfoConversationId, setGroupInfoConversationId] = useState(null);
   const [socket, setSocket] = useState(null);
   const [incomingCall, setIncomingCall] = useState(null);
   const [outgoingCall, setOutgoingCall] = useState(null);
@@ -376,6 +378,13 @@ export default function App() {
     }
   };
 
+  // --- Group management ----------------------------------------------------
+
+  const goToGroupInfo = (conversationId) => {
+    setGroupInfoConversationId(conversationId);
+    setScreen('groupInfo');
+  };
+
   // --- Push notifications -------------------------------------------------
 
   // Ask for permission once (with a plain-language reason first), then
@@ -604,6 +613,16 @@ export default function App() {
               initialDraft={activeChat.initialDraft}
               onStartCall={startCall}
               onBack={() => setScreen('chatList')}
+              onOpenGroupInfo={() => goToGroupInfo(activeChat.conversationId)}
+            />
+          )}
+          {screen === 'groupInfo' && (
+            <GroupInfoScreen
+              token={token}
+              currentUser={currentUser}
+              conversationId={groupInfoConversationId}
+              onBack={() => setScreen('chat')}
+              onLeave={() => setScreen('chatList')}
             />
           )}
           {screen === 'profile' && (
