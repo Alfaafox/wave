@@ -18,7 +18,34 @@ export function previewText(lastMessage) {
   return lastMessage.content;
 }
 
-export default function ConversationRow({ item, presenceMap, onPress, onLongPress }) {
+// Fixed-size slot around the avatar for the Updates status ring (Session 19
+// - see UpdatesScreen.js / ChatListScreen.js). Always reserves the same
+// outer box whether or not a ring is drawn, so rows don't jitter depending
+// on which contacts happen to have an active status. Purely decorative -
+// tapping the avatar still just opens the chat (onPress on the whole row,
+// unchanged); status is only ever opened from the Updates tab.
+const AVATAR_SIZE = 52;
+const RING_GAP = 3;
+const RING_BORDER = 2.5;
+const RING_SIZE = AVATAR_SIZE + 2 * (RING_GAP + RING_BORDER);
+
+function AvatarStatusRing({ variant, children }) {
+  const showRing = variant === 'unviewed' || variant === 'viewed';
+  return (
+    <View
+      style={{
+        width: RING_SIZE, height: RING_SIZE, borderRadius: RING_SIZE / 2,
+        borderWidth: showRing ? RING_BORDER : 0,
+        borderColor: variant === 'unviewed' ? colors.accent : colors.border,
+        justifyContent: 'center', alignItems: 'center',
+      }}
+    >
+      {children}
+    </View>
+  );
+}
+
+export default function ConversationRow({ item, presenceMap, unviewedStatusUserIds, viewedStatusUserIds, onPress, onLongPress }) {
   const isGroup = !!item.is_group;
   const title = isGroup ? item.name : item.with?.name;
   const online = !isGroup && item.with?.id != null && !!presenceMap?.get?.(item.with.id)?.online;
@@ -27,6 +54,10 @@ export default function ConversationRow({ item, presenceMap, onPress, onLongPres
   // data URI or null) - GET /conversations already includes it. Groups have no
   // picture concept, so they always fall back to the initial.
   const avatarUri = !isGroup ? (item.with?.profilePicture || null) : null;
+  const otherId = !isGroup ? item.with?.id : null;
+  const statusVariant = otherId != null && unviewedStatusUserIds?.has?.(otherId)
+    ? 'unviewed'
+    : (otherId != null && viewedStatusUserIds?.has?.(otherId) ? 'viewed' : 'none');
 
   return (
     <TouchableOpacity
@@ -35,16 +66,18 @@ export default function ConversationRow({ item, presenceMap, onPress, onLongPres
       onPress={onPress}
       onLongPress={onLongPress}
     >
-      <View>
-        {avatarUri ? (
-          <Image source={{ uri: avatarUri }} style={styles.avatar} resizeMode="cover" />
-        ) : (
-          <View style={styles.avatar}>
-            <Text style={styles.avatarText}>{(title || '?').charAt(0).toUpperCase()}</Text>
-          </View>
-        )}
-        {online && <View style={styles.onlineDot} />}
-      </View>
+      <AvatarStatusRing variant={statusVariant}>
+        <View>
+          {avatarUri ? (
+            <Image source={{ uri: avatarUri }} style={styles.avatar} resizeMode="cover" />
+          ) : (
+            <View style={styles.avatar}>
+              <Text style={styles.avatarText}>{(title || '?').charAt(0).toUpperCase()}</Text>
+            </View>
+          )}
+          {online && <View style={styles.onlineDot} />}
+        </View>
+      </AvatarStatusRing>
       <View style={{ flex: 1, marginLeft: spacing.md }}>
         <View style={styles.rowTopLine}>
           <Text style={styles.rowName} numberOfLines={1}>{title || 'Chat'}</Text>

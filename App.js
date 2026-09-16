@@ -27,10 +27,12 @@ import InviteFriendScreen from './src/screens/InviteFriendScreen';
 import StarredMessagesScreen from './src/screens/StarredMessagesScreen';
 import ScheduledMessagesScreen from './src/screens/ScheduledMessagesScreen';
 import ArchivedChatsScreen from './src/screens/ArchivedChatsScreen';
+import StatusCreatorScreen from './src/screens/StatusCreatorScreen';
+import StatusViewerScreen from './src/screens/StatusViewerScreen';
 import NotificationBanner from './src/components/NotificationBanner';
 import { colors } from './src/theme';
 import { disconnectSocket, connectSocket, getSocket } from './src/utils/socket';
-import { getCurrentUser, getConversations, updateProfilePicture } from './src/utils/api';
+import { getCurrentUser, getConversations, updateProfilePicture, startConversation } from './src/utils/api';
 import {
   getPermissionStatus,
   hasAskedPermission,
@@ -49,6 +51,7 @@ export default function App() {
   const [token, setToken] = useState(null);
   const [currentUser, setCurrentUser] = useState(null);
   const [activeChat, setActiveChat] = useState(null);
+  const [statusViewerGroup, setStatusViewerGroup] = useState(null);
   const [socket, setSocket] = useState(null);
   const [incomingCall, setIncomingCall] = useState(null);
   const [outgoingCall, setOutgoingCall] = useState(null);
@@ -349,6 +352,30 @@ export default function App() {
     setOutgoingCall({ mode: 'outgoing', targetUserId, targetName, callType });
   };
 
+  // --- Updates / Status ----------------------------------------------------
+
+  const goToStatusCreator = () => setScreen('statusCreator');
+
+  const goToStatusViewer = (group) => {
+    setStatusViewerGroup(group);
+    setScreen('statusViewer');
+  };
+
+  // StatusViewerScreen's reply bar. Reply text isn't auto-sent (no reliable
+  // hook into ChatScreen's socket-ready timing without adding real risk to
+  // an already-complex screen) - instead it opens/finds the 1:1 chat with
+  // the drafted text pre-filled in the input box (activeChat.initialDraft,
+  // read once by ChatScreen's `input` useState default) so nothing typed is
+  // silently discarded, and the user hits send themselves.
+  const handleStartChatFromStatus = async (user, draftText) => {
+    try {
+      const result = await startConversation(token, null, user.id);
+      openChat({ conversationId: result.conversationId, otherUser: result.with, isGroup: false, initialDraft: draftText });
+    } catch (err) {
+      Alert.alert('Could not open chat', err.message || 'Try again.');
+    }
+  };
+
   // --- Push notifications -------------------------------------------------
 
   // Ask for permission once (with a plain-language reason first), then
@@ -542,7 +569,27 @@ export default function App() {
             <CallsScreen token={token} currentUser={currentUser} onStartCall={startCall} onOpenChat={openChat} />
           )}
           {screen === 'updates' && (
-            <UpdatesScreen currentUser={currentUser} />
+            <UpdatesScreen
+              currentUser={currentUser}
+              token={token}
+              onCreateStatus={goToStatusCreator}
+              onViewStatus={goToStatusViewer}
+            />
+          )}
+          {screen === 'statusCreator' && (
+            <StatusCreatorScreen
+              token={token}
+              onDone={() => setScreen('updates')}
+            />
+          )}
+          {screen === 'statusViewer' && statusViewerGroup && (
+            <StatusViewerScreen
+              statusGroup={statusViewerGroup}
+              currentUser={currentUser}
+              token={token}
+              onClose={() => setScreen('updates')}
+              onStartChat={handleStartChatFromStatus}
+            />
           )}
           {screen === 'chat' && activeChat && (
             <ChatScreen
@@ -554,6 +601,7 @@ export default function App() {
               groupName={activeChat.groupName}
               presenceMap={presenceMap}
               jumpToMessageId={activeChat.scrollToMessageId}
+              initialDraft={activeChat.initialDraft}
               onStartCall={startCall}
               onBack={() => setScreen('chatList')}
             />

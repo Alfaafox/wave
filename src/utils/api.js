@@ -495,3 +495,24 @@ export function createScheduledMessage(token, { conversationId, content, message
 export function cancelScheduledMessage(token, id) {
   return request(`/scheduled/${id}`, { method: 'DELETE', headers: authHeaders(token) });
 }
+
+// Updates / Status feature. createStatus's payload shape matches what
+// routes/status.js validates: { content_type, content, caption, bg_color,
+// location, show_time, poll_data }. Server response is { status, user }.
+export function createStatus(token, payload) {
+  return request('/status', { method: 'POST', headers: authHeaders(token), body: JSON.stringify(payload) });
+}
+// -> { mine: [...], contacts: [{ user, statuses, hasUnviewed }] }
+export function getStatusFeed(token) {
+  return request('/status/feed', { method: 'GET', headers: authHeaders(token) });
+}
+export function viewStatus(token, id) {
+  return request(`/status/${id}/view`, { method: 'POST', headers: authHeaders(token) });
+}
+export function deleteStatus(token, id) {
+  return request(`/status/${id}`, { method: 'DELETE', headers: authHeaders(token) });
+}
+// -> { statuses: [...] } - own active statuses with full viewer details.
+export function getMyStatuses(token) {
+  return request('/status/my', { method: 'GET', headers: authHeaders(token) });
+}

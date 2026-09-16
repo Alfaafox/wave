@@ -6,6 +6,7 @@ import {
 import {
   getConversations, startConversation, createGroup, deleteConversation,
   markAllConversationsRead, archiveConversation, getArchivedConversations,
+  getStatusFeed,
 } from '../utils/api';
 import { connectSocket } from '../utils/socket';
 import { colors, spacing, radii, typography, shadow } from '../theme';
@@ -27,10 +28,32 @@ export default function ChatListScreen({ token, currentUser, presenceMap, onOpen
   const [groupNameInput, setGroupNameInput] = useState('');
   const [favouriteIds, setFavouriteIds] = useState([]);
   const [archivedCount, setArchivedCount] = useState(0);
+  // Updates status rings on each row's avatar (Session 19 - purely
+  // decorative, see ConversationRow.js). Two sets rather than one map: a
+  // contact is either in unviewedStatusUserIds (blue ring), in
+  // viewedStatusUserIds (grey ring), or in neither (no ring).
+  const [unviewedStatusUserIds, setUnviewedStatusUserIds] = useState(() => new Set());
+  const [viewedStatusUserIds, setViewedStatusUserIds] = useState(() => new Set());
 
   const loadFavourites = useCallback(() => {
     getFavourites().then(setFavouriteIds).catch(() => {});
   }, []);
+
+  const loadStatusRings = useCallback(() => {
+    getStatusFeed(token)
+      .then((data) => {
+        const contacts = Array.isArray(data?.contacts) ? data.contacts : [];
+        const unviewed = new Set();
+        const viewed = new Set();
+        contacts.forEach((group) => {
+          if (group.hasUnviewed) unviewed.add(group.user.id);
+          else viewed.add(group.user.id);
+        });
+        setUnviewedStatusUserIds(unviewed);
+        setViewedStatusUserIds(viewed);
+      })
+      .catch(() => {}); // decorative only - a failed fetch just means no rings this pass
+  }, [token]);
 
   const loadConversations = useCallback(async () => {
     try {
@@ -53,6 +76,7 @@ export default function ChatListScreen({ token, currentUser, presenceMap, onOpen
     loadConversations();
     loadFavourites();
     refreshArchivedCount();
+    loadStatusRings();
     const socket = connectSocket(token);
     // Presence (online dots) is owned by App.js via `presenceMap` - see there.
     const refreshOnActivity = () => loadConversations();
@@ -81,12 +105,13 @@ export default function ChatListScreen({ token, currentUser, presenceMap, onOpen
       socket.off('conversationArchived', handleArchived);
       socket.off('conversationUnarchived', handleUnarchived);
     };
-  }, [loadConversations, loadFavourites, refreshArchivedCount, token]);
+  }, [loadConversations, loadFavourites, refreshArchivedCount, loadStatusRings, token]);
 
   const handleRefresh = async () => {
     setRefreshing(true);
     loadFavourites();
     refreshArchivedCount();
+    loadStatusRings();
     await loadConversations();
     setRefreshing(false);
   };
@@ -349,6 +374,8 @@ export default function ChatListScreen({ token, currentUser, presenceMap, onOpen
           <ConversationRow
             item={item}
             presenceMap={presenceMap}
+            unviewedStatusUserIds={unviewedStatusUserIds}
+            viewedStatusUserIds={viewedStatusUserIds}
             onPress={() => onOpenChat({
               conversationId: item.id,
               otherUser: item.with,

@@ -497,10 +497,13 @@ function CropOverlay({ layout, initialCropRegion, onCropChange }) {
   );
 }
 
-export default function ChatScreen({ token, currentUser, conversationId, otherUser, isGroup, groupName, presenceMap, onBack, onStartCall, jumpToMessageId }) {
+export default function ChatScreen({ token, currentUser, conversationId, otherUser, isGroup, groupName, presenceMap, onBack, onStartCall, jumpToMessageId, initialDraft }) {
   const insets = useSafeAreaInsets();
   const [messages, setMessages] = useState([]);
-  const [input, setInput] = useState('');
+  // Pre-fills the input when opened from a Status reply (App.js
+  // handleStartChatFromStatus) - read once as the initial state value, not
+  // synced on every re-render, so typing normally still works.
+  const [input, setInput] = useState(initialDraft || '');
   // 3-state typing indicator for whoever last started typing in this chat.
   //   state: 'gone' | 'typing' | 'paused'
   const [typing, setTyping] = useState({ state: 'gone', userId: null, name: '' });
