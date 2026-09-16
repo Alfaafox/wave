@@ -352,7 +352,7 @@ function StatusVideoPreview({ uri }) {
 }
 
 export default function StatusCreatorScreen({ token, onDone }) {
-  const [mode, setMode] = useState('camera');
+  const [mode, setMode] = useState('photo');
   const [posting, setPosting] = useState(false);
 
   // Text mode
