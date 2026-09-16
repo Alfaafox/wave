@@ -25,7 +25,10 @@ import {
   useAudioRecorder, useAudioRecorderState, useAudioPlayer, useAudioPlayerStatus
 } from 'expo-audio';
 import { VideoView, useVideoPlayer } from 'expo-video';
-import { getMessages, getConversations, setConversationMute, setPrivateChat, searchMessages, starMessage, unstarMessage, pinMessage, unpinMessage, getPinnedMessages, uploadFile, getFileUrl, blockUser, leaveGroup, getGroupInfo, SERVER_URL } from '../utils/api';
+import Svg, { Path } from 'react-native-svg';
+import { captureRef } from 'react-native-view-shot';
+import DateTimePicker from '@react-native-community/datetimepicker';
+import { getMessages, getConversations, setConversationMute, setPrivateChat, searchMessages, starMessage, unstarMessage, pinMessage, unpinMessage, getPinnedMessages, uploadFile, getFileUrl, blockUser, leaveGroup, getGroupInfo, createScheduledMessage, SERVER_URL } from '../utils/api';
 import { connectSocket } from '../utils/socket';
 import { ReactionPicker, ReactionPills } from '../components/MessageReactions';
 import MediaPickerSheet from '../components/MediaPickerSheet';
@@ -80,6 +83,11 @@ const ALLOWED_DOC_MIME = [
   'video/mp4',
 ];
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
+
+// Draw/edit tool on the staged-image modal (Session 22).
+const DRAW_COLORS = ['#ffffff', '#000000', '#ff3b30', '#ffcc00', '#007aff'];
+const DRAW_WIDTHS = [3, 6, 12];
+const MAX_DRAW_IMAGE_KB = 3000; // matches processAndSendImage's own cap
 
 function truncate(text, max) {
   const s = (text || '').replace(/\s+/g, ' ').trim();
@@ -497,6 +505,85 @@ function CropOverlay({ layout, initialCropRegion, onCropChange }) {
   );
 }
 
+// Draw overlay for the staged-image modal (Session 22). Finished strokes
+// live in `pathsRef` (a ref ChatScreen owns and reads directly when
+// flattening via captureRef) rather than ChatScreen state, so ChatScreen
+// itself never re-renders while a finger is moving - only this small
+// component does, exactly the same "local component state during the
+// gesture, parent only reads a ref" split CropOverlay above uses. The one
+// difference from CropOverlay: a stroke needs LIVE visual feedback while
+// still in progress (not just on release), so the in-progress path is this
+// component's own useState, redrawn every move - still isolated from the
+// rest of ChatScreen's tree.
+//
+// `undoVersion` is a plain counter ChatScreen bumps on Undo (which mutates
+// pathsRef.current directly) - this component has no other way to learn
+// that its parent-owned ref changed out from under it, so bumping the
+// counter is what triggers the re-render that shows the shorter list.
+function DrawingCanvas({ width, height, color, strokeWidth, pathsRef, undoVersion }) {
+  const [currentPath, setCurrentPath] = useState('');
+  const [, forceUpdate] = useState(0);
+  const currentPathPointsRef = useRef([]);
+  const colorRef = useRef(color);
+  colorRef.current = color;
+  const strokeWidthRef = useRef(strokeWidth);
+  strokeWidthRef.current = strokeWidth;
+
+  useEffect(() => {
+    forceUpdate((n) => n + 1);
+  }, [undoVersion]);
+
+  const panResponderRef = useRef(null);
+  if (!panResponderRef.current) {
+    panResponderRef.current = PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onStartShouldSetPanResponderCapture: () => true,
+      onPanResponderGrant: (evt) => {
+        const { locationX, locationY } = evt.nativeEvent;
+        currentPathPointsRef.current = [`M${locationX.toFixed(1)} ${locationY.toFixed(1)}`];
+        setCurrentPath(currentPathPointsRef.current.join(' '));
+      },
+      onPanResponderMove: (evt) => {
+        const { locationX, locationY } = evt.nativeEvent;
+        currentPathPointsRef.current.push(`L${locationX.toFixed(1)} ${locationY.toFixed(1)}`);
+        setCurrentPath(currentPathPointsRef.current.join(' '));
+      },
+      onPanResponderRelease: () => {
+        if (currentPathPointsRef.current.length > 1) {
+          pathsRef.current.push({
+            d: currentPathPointsRef.current.join(' '),
+            color: colorRef.current,
+            width: strokeWidthRef.current,
+          });
+          forceUpdate((n) => n + 1);
+        }
+        currentPathPointsRef.current = [];
+        setCurrentPath('');
+      },
+      onPanResponderTerminate: () => {
+        currentPathPointsRef.current = [];
+        setCurrentPath('');
+      },
+    });
+  }
+
+  return (
+    <View
+      style={{ position: 'absolute', left: 0, top: 0, width, height }}
+      {...panResponderRef.current.panHandlers}
+    >
+      <Svg width={width} height={height}>
+        {pathsRef.current.map((p, i) => (
+          <Path key={i} d={p.d} stroke={p.color} strokeWidth={p.width} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+        ))}
+        {currentPath ? (
+          <Path d={currentPath} stroke={colorRef.current} strokeWidth={strokeWidthRef.current} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+        ) : null}
+      </Svg>
+    </View>
+  );
+}
+
 export default function ChatScreen({ token, currentUser, conversationId, otherUser, isGroup, groupName, presenceMap, onBack, onStartCall, jumpToMessageId, initialDraft, onOpenGroupInfo }) {
   const insets = useSafeAreaInsets();
   const [messages, setMessages] = useState([]);
@@ -592,6 +679,30 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
   const [imageLayout, setImageLayout] = useState({ width: 0, height: 0 });
   const [imageDimensions, setImageDimensions] = useState({ width: 0, height: 0 });
   const [applyingCrop, setApplyingCrop] = useState(false);
+
+  // Draw tool (Session 22), mutually exclusive with cropMode - see
+  // enterDrawMode/setCropMode(true) below, each explicitly turns the other
+  // off. drawPathsRef is the array of FINISHED strokes ({d, color, width})
+  // captureRef flattens on Done; DrawingCanvas above owns the in-progress
+  // stroke itself so ChatScreen never re-renders mid-draw. drawUndoVersion
+  // is a plain bump counter - DrawingCanvas has no other signal that
+  // ChatScreen mutated the ref it's reading out from under it.
+  const [drawMode, setDrawMode] = useState(false);
+  const [drawColor, setDrawColor] = useState(DRAW_COLORS[2]);
+  const [drawStrokeWidth, setDrawStrokeWidth] = useState(DRAW_WIDTHS[1]);
+  const [drawUndoVersion, setDrawUndoVersion] = useState(0);
+  const [applyingDraw, setApplyingDraw] = useState(false);
+  const drawPathsRef = useRef([]);
+  const drawCaptureRef = useRef(null);
+
+  // Scheduled message date/time picker (Session 22), opened by long-pressing
+  // the send button. Android's community DateTimePicker renders native
+  // imperative dialogs (not an inline spinner), one mode at a time, hence
+  // scheduleStep tracking which of the two is currently showing.
+  const [showSchedulePicker, setShowSchedulePicker] = useState(false);
+  const [scheduleDate, setScheduleDate] = useState(new Date());
+  const [scheduleStep, setScheduleStep] = useState('date'); // Android only: 'date' | 'time'
+  const [schedulingMessage, setSchedulingMessage] = useState(false);
 
   // The <Image> box and the photo's own aspect ratio rarely match, so
   // resizeMode="contain" letterboxes/pillarboxes it - the crop overlay has
@@ -1059,6 +1170,64 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     setViewOnceDuration(null);
   };
 
+  // Scheduled message (Session 22) - long-press the send button. Text only
+  // (the task brief is explicit that media isn't supported here), and only
+  // when something's actually typed.
+  const openSchedulePicker = () => {
+    if (!input.trim()) return;
+    setScheduleDate(new Date(Date.now() + 5 * 60 * 1000)); // default 5 min out - always a valid future time
+    setScheduleStep('date');
+    setShowSchedulePicker(true);
+  };
+
+  const cancelSchedulePicker = () => {
+    setShowSchedulePicker(false);
+    setScheduleStep('date');
+  };
+
+  const confirmSchedule = async (finalDate) => {
+    const date = finalDate || scheduleDate;
+    if (date <= new Date()) {
+      Alert.alert('Pick a future time', 'Scheduled messages must be sent later than now.');
+      return;
+    }
+    if (schedulingMessage) return;
+    setSchedulingMessage(true);
+    try {
+      await createScheduledMessage(token, { conversationId, content: input, messageType: 'text', sendAt: date.toISOString() });
+      setInput('');
+      setShowSchedulePicker(false);
+      Alert.alert('Scheduled', `Message scheduled for ${date.toLocaleString()}`);
+    } catch (err) {
+      Alert.alert('Could not schedule message', err.message || 'Try again.');
+    } finally {
+      setSchedulingMessage(false);
+    }
+  };
+
+  // Android's community DateTimePicker is an imperative native dialog per
+  // mode, not an inline spinner - mounting <DateTimePicker mode="date" />
+  // pops the native date dialog, its onChange fires once then it should
+  // unmount, same for "time" right after. iOS instead renders an inline
+  // spinner happily inside a single mode="datetime" picker (see the JSX
+  // below), so these two handlers are Android-only.
+  const handleAndroidDateChange = (event, selected) => {
+    if (event.type === 'dismissed' || !selected) { cancelSchedulePicker(); return; }
+    const merged = new Date(scheduleDate);
+    merged.setFullYear(selected.getFullYear(), selected.getMonth(), selected.getDate());
+    setScheduleDate(merged);
+    setScheduleStep('time');
+  };
+
+  const handleAndroidTimeChange = (event, selected) => {
+    if (event.type === 'dismissed' || !selected) { cancelSchedulePicker(); return; }
+    const merged = new Date(scheduleDate);
+    merged.setHours(selected.getHours(), selected.getMinutes(), 0, 0);
+    setScheduleDate(merged);
+    setShowSchedulePicker(false);
+    confirmSchedule(merged);
+  };
+
   // Staged video's send (small stagedBar above). Staged image has its own
   // sendStagedImage, triggered from the full-screen preview modal instead.
   const sendStagedMedia = () => {
@@ -1080,6 +1249,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     setStagedCaption('');
     setViewOnceDuration(null);
     cancelCrop();
+    cancelDraw();
   };
   // Also the Modal's onRequestClose (Android back button) - reachable even
   // while cropMode is true (the button that calls this is hidden then, but
@@ -1090,6 +1260,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     setStagedCaption('');
     setViewOnceDuration(null);
     cancelCrop();
+    cancelDraw();
   };
 
   const cancelCrop = () => {
@@ -1124,6 +1295,55 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
       Alert.alert('Crop failed', err.message);
     } finally {
       setApplyingCrop(false);
+    }
+  };
+
+  // Draw mode entry/exit - mutually exclusive with crop mode (the Crop
+  // button's own onPress calls this too before flipping cropMode on).
+  const enterDrawMode = () => {
+    if (!imageDimensions.width) return;
+    setCropMode(false);
+    drawPathsRef.current = [];
+    setDrawUndoVersion((v) => v + 1);
+    setDrawMode(true);
+  };
+
+  const cancelDraw = () => {
+    setDrawMode(false);
+    drawPathsRef.current = [];
+  };
+
+  const handleUndoStroke = () => {
+    if (drawPathsRef.current.length === 0) return;
+    drawPathsRef.current = drawPathsRef.current.slice(0, -1);
+    setDrawUndoVersion((v) => v + 1);
+  };
+
+  // Flattens the image + every stroke into one new staged image via
+  // captureRef. `result: 'data-uri'` (not the task brief's literal
+  // `{format,quality}` alone) is required, not stylistic: captureRef's
+  // default result is a file:// temp path, but stagedImage is a data: URI
+  // EVERYWHERE ELSE in this app (processAndSendImage, applyCrop above,
+  // sendMessage's own content column) - handing a bare file:// path to
+  // setStagedImage would produce a message no recipient (or even a second
+  // screen on this same device) could ever actually load.
+  const handleDoneDraw = async () => {
+    if (applyingDraw) return;
+    if (drawPathsRef.current.length === 0) { cancelDraw(); return; }
+    setApplyingDraw(true);
+    try {
+      const dataUri = await captureRef(drawCaptureRef, { format: 'jpg', quality: 0.9, result: 'data-uri' });
+      const approxKb = Math.round((dataUri.length * 0.75) / 1024);
+      if (approxKb > MAX_DRAW_IMAGE_KB) {
+        Alert.alert('Image too large', `About ${approxKb}KB after drawing. Try fewer/thinner strokes.`);
+        return;
+      }
+      setStagedImage(dataUri);
+      cancelDraw();
+    } catch (err) {
+      Alert.alert('Could not save drawing', err.message || 'Try again.');
+    } finally {
+      setApplyingDraw(false);
     }
   };
 
@@ -2841,13 +3061,32 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
           style={{ flex: 1 }}
         >
           {stagedImage && (
-            <Image
-              source={{ uri: stagedImage }}
-              style={styles.stagedImagePreview}
-              resizeMode="contain"
-              onLayout={(e) => setImageLayout({ width: e.nativeEvent.layout.width, height: e.nativeEvent.layout.height })}
-              onLoad={(e) => setImageDimensions({ width: e.nativeEvent.source.width, height: e.nativeEvent.source.height })}
-            />
+            // collapsable={false} is required on Android - without it this
+            // View has no styling of its own beyond flex:1, so the native
+            // view-flattening optimization can drop it from the actual
+            // native tree, and captureRef needs a real native view to
+            // snapshot.
+            <View ref={drawCaptureRef} collapsable={false} style={{ flex: 1 }}>
+              <Image
+                source={{ uri: stagedImage }}
+                style={styles.stagedImagePreview}
+                resizeMode="contain"
+                onLayout={(e) => setImageLayout({ width: e.nativeEvent.layout.width, height: e.nativeEvent.layout.height })}
+                onLoad={(e) => setImageDimensions({ width: e.nativeEvent.source.width, height: e.nativeEvent.source.height })}
+              />
+              {drawMode && imageRect.width > 0 && (
+                <View style={{ position: 'absolute', left: imageRect.left, top: imageRect.top, width: imageRect.width, height: imageRect.height }}>
+                  <DrawingCanvas
+                    width={imageRect.width}
+                    height={imageRect.height}
+                    color={drawColor}
+                    strokeWidth={drawStrokeWidth}
+                    pathsRef={drawPathsRef}
+                    undoVersion={drawUndoVersion}
+                  />
+                </View>
+              )}
+            </View>
           )}
 
           {cropMode && imageRect.width > 0 && (
@@ -2860,12 +3099,12 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
             </View>
           )}
 
-          {!cropMode && (
+          {!cropMode && !drawMode && (
             <>
               <View style={styles.stagedImageTopRight}>
                 <TouchableOpacity
                   style={styles.stagedImageTopBtn}
-                  onPress={() => Alert.alert('Coming soon', 'Drawing tools coming in next update.')}
+                  onPress={enterDrawMode}
                 >
                   <Ionicons name="brush-outline" size={22} color="#fff" />
                   <Text style={styles.stagedImageTopBtnLabel}>Edit</Text>
@@ -2874,6 +3113,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
                   style={styles.stagedImageTopBtn}
                   onPress={() => {
                     if (!imageDimensions.width) return;
+                    setDrawMode(false);
                     cropRegionRef.current = { x: 0.05, y: 0.05, width: 0.9, height: 0.9 };
                     setCropMode(true);
                   }}
@@ -2940,6 +3180,51 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
             </View>
           )}
 
+          {drawMode && (
+            <View style={styles.drawToolbar}>
+              <View style={styles.drawControlsRow}>
+                <TouchableOpacity onPress={handleUndoStroke} style={styles.drawUndoBtn} disabled={applyingDraw}>
+                  <Ionicons name="arrow-undo-outline" size={20} color="#fff" />
+                </TouchableOpacity>
+                <View style={styles.drawSwatchRow}>
+                  {DRAW_COLORS.map((c) => (
+                    <TouchableOpacity
+                      key={c}
+                      onPress={() => setDrawColor(c)}
+                      style={[styles.drawSwatch, { backgroundColor: c }, drawColor === c && styles.drawSwatchActive]}
+                    />
+                  ))}
+                </View>
+                <View style={styles.drawWidthRow}>
+                  {DRAW_WIDTHS.map((w) => (
+                    <TouchableOpacity key={w} onPress={() => setDrawStrokeWidth(w)} style={styles.drawWidthBtn} hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}>
+                      <View
+                        style={[
+                          styles.drawWidthDot,
+                          { width: w + 6, height: w + 6, borderRadius: (w + 6) / 2 },
+                          drawStrokeWidth === w && styles.drawWidthDotActive,
+                        ]}
+                      />
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+              <View style={styles.drawTopRow}>
+                <TouchableOpacity onPress={cancelDraw} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} disabled={applyingDraw}>
+                  <Text style={styles.stagedImageCancelText}>Cancel</Text>
+                </TouchableOpacity>
+                <Text style={styles.cropActionTitle}>Draw</Text>
+                {applyingDraw ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <TouchableOpacity onPress={handleDoneDraw} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                    <Text style={styles.stagedImageOkText}>Done</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            </View>
+          )}
+
           {/* View-once timer bottom sheet - same VIEW_ONCE_PILLS rendering and
               the same shared viewOnceDuration state as the small stagedBar
               above, just opened from this button instead of shown inline. */}
@@ -2979,6 +3264,60 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
         </KeyboardAvoidingView>
         </View>
       </Modal>
+
+      {/* Scheduled message date/time picker (Session 22), opened by
+          long-pressing the send button. iOS gets one inline "datetime"
+          spinner inside our own Modal; Android's DateTimePicker is an
+          imperative native dialog, so it's mounted directly (no wrapping
+          Modal of ours) and stepped date -> time via scheduleStep. */}
+      {showSchedulePicker && Platform.OS === 'ios' && (
+        <Modal transparent animationType="slide" visible={showSchedulePicker} onRequestClose={cancelSchedulePicker}>
+          <View style={styles.scheduleOverlay}>
+            <View style={styles.scheduleSheet}>
+              <Text style={styles.scheduleTitle}>Schedule Message</Text>
+              <DateTimePicker
+                value={scheduleDate}
+                mode="datetime"
+                display="spinner"
+                minimumDate={new Date()}
+                onChange={(event, selected) => { if (selected) setScheduleDate(selected); }}
+                style={{ alignSelf: 'stretch' }}
+              />
+              <View style={styles.scheduleButtonRow}>
+                <TouchableOpacity onPress={cancelSchedulePicker} disabled={schedulingMessage} style={styles.scheduleCancelBtn}>
+                  <Text style={styles.scheduleCancelText}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => confirmSchedule()} disabled={schedulingMessage} style={styles.scheduleConfirmBtn}>
+                  {schedulingMessage ? (
+                    <ActivityIndicator color={colors.textOnAccent} />
+                  ) : (
+                    <Text style={styles.scheduleConfirmText}>Schedule</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </Modal>
+      )}
+
+      {showSchedulePicker && Platform.OS === 'android' && scheduleStep === 'date' && (
+        <DateTimePicker
+          value={scheduleDate}
+          mode="date"
+          display="default"
+          minimumDate={new Date()}
+          onChange={handleAndroidDateChange}
+        />
+      )}
+
+      {showSchedulePicker && Platform.OS === 'android' && scheduleStep === 'time' && (
+        <DateTimePicker
+          value={scheduleDate}
+          mode="time"
+          display="default"
+          onChange={handleAndroidTimeChange}
+        />
+      )}
 
       {mentionSuggestions.length > 0 && (
         <Animated.View
@@ -3071,7 +3410,12 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
             </Animated.View>
           </TouchableOpacity>
         ) : (
-          <TouchableOpacity style={styles.sendButtonRound} onPress={() => sendMessage()}>
+          <TouchableOpacity
+            style={styles.sendButtonRound}
+            onPress={() => sendMessage()}
+            onLongPress={openSchedulePicker}
+            delayLongPress={350}
+          >
             <Ionicons name="send" size={18} color={colors.textOnAccent} />
           </TouchableOpacity>
         )}
@@ -3615,6 +3959,32 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.7)',
   },
   cropActionTitle: { color: '#fff', fontSize: 15, fontWeight: '600' },
+
+  drawToolbar: {
+    position: 'absolute', left: 0, right: 0, bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+  },
+  drawTopRow: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    paddingHorizontal: spacing.lg, paddingVertical: spacing.lg,
+  },
+  drawControlsRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: spacing.lg, paddingTop: spacing.md,
+    borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: 'rgba(255,255,255,0.2)',
+  },
+  drawUndoBtn: { padding: spacing.xs },
+  drawSwatchRow: { flexDirection: 'row', gap: spacing.sm },
+  drawSwatch: {
+    width: 24, height: 24, borderRadius: 12,
+    borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.4)',
+  },
+  drawSwatchActive: { borderColor: '#fff', borderWidth: 2.5 },
+  drawWidthRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  drawWidthBtn: { width: 24, height: 24, justifyContent: 'center', alignItems: 'center' },
+  drawWidthDot: { backgroundColor: 'rgba(255,255,255,0.5)' },
+  drawWidthDotActive: { backgroundColor: colors.accent },
+
   stagedImageCaptionRow: { flexDirection: 'row', alignItems: 'center' },
   stagedImageCaptionInput: {
     flex: 1, color: '#fff', fontSize: 15, paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
@@ -3635,6 +4005,21 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg, paddingTop: spacing.lg, paddingBottom: spacing.xl,
   },
   viewOnceSheetTitle: { fontSize: 15, fontWeight: '700', color: colors.textPrimary, marginBottom: spacing.md },
+
+  scheduleOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+  scheduleSheet: {
+    backgroundColor: colors.surface, borderTopLeftRadius: radii.lg, borderTopRightRadius: radii.lg,
+    paddingHorizontal: spacing.lg, paddingTop: spacing.lg, paddingBottom: spacing.xl, alignItems: 'center',
+  },
+  scheduleTitle: { fontSize: 16, fontWeight: '700', color: colors.textPrimary, marginBottom: spacing.sm, alignSelf: 'flex-start' },
+  scheduleButtonRow: { flexDirection: 'row', justifyContent: 'flex-end', alignSelf: 'stretch', marginTop: spacing.md, gap: spacing.md },
+  scheduleCancelBtn: { paddingVertical: spacing.sm, paddingHorizontal: spacing.lg },
+  scheduleCancelText: { color: colors.textSecondary, fontSize: 15, fontWeight: '600' },
+  scheduleConfirmBtn: {
+    backgroundColor: colors.accent, borderRadius: radii.sm,
+    paddingVertical: spacing.sm, paddingHorizontal: spacing.xl, minWidth: 90, alignItems: 'center',
+  },
+  scheduleConfirmText: { color: colors.textOnAccent, fontSize: 15, fontWeight: '700' },
 
   audioRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: spacing.xs, minWidth: 140 },
   audioIcon: { marginRight: spacing.sm },

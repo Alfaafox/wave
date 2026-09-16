@@ -10,6 +10,7 @@ const MIN_SCALE = 1;
 const MAX_SCALE = 4;
 const DOUBLE_TAP_MS = 280;
 const TAP_SLOP = 10;
+const DOUBLE_TAP_SCALE = 2.5;
 
 const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
 const touchDistance = (touches) => {
@@ -156,11 +157,14 @@ export default function ImageViewerModal({ visible, uri, onClose, onSave, saving
         const now = Date.now();
         const wasTap = Math.abs(g.dx) < TAP_SLOP && Math.abs(g.dy) < TAP_SLOP;
 
-        // Double-tap -> reset to 1x.
+        // Double-tap -> toggle between 1x and DOUBLE_TAP_SCALE, not always
+        // back to 1x - already zoomed in (past the halfway point) resets,
+        // otherwise it zooms in, centered.
         if (wasTap) {
           if (now - lastTapRef.current < DOUBLE_TAP_MS) {
             lastTapRef.current = 0;
-            springTo(1, 0, 0);
+            const target = scaleRef.current > (1 + DOUBLE_TAP_SCALE) / 2 ? 1 : DOUBLE_TAP_SCALE;
+            springTo(target, 0, 0);
             Animated.parallel([
               Animated.spring(translateY, { toValue: 0, useNativeDriver: true }),
               Animated.spring(opacity, { toValue: 1, useNativeDriver: true }),
