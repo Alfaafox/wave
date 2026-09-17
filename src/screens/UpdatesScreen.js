@@ -136,8 +136,6 @@ export default function UpdatesScreen({ currentUser, token, onCreateStatus, onVi
   };
 
   const hasMine = feed.mine.length > 0;
-  const myPreview = feed.mine.slice(0, 3);
-  const myExtra = feed.mine.length - myPreview.length;
 
   const handleMyStatusPress = () => {
     if (hasMine) onViewStatus({ user: currentUser, statuses: feed.mine });
@@ -165,19 +163,6 @@ export default function UpdatesScreen({ currentUser, token, onCreateStatus, onVi
           <Ionicons name="camera-outline" size={22} color={colors.accent} />
         </TouchableOpacity>
       </TouchableOpacity>
-
-      {hasMine && (
-        <View style={styles.myPreviewStrip}>
-          {myPreview.map((s) => (
-            <StatusThumb key={s.id} status={s} style={styles.myPreviewThumb} />
-          ))}
-          {myExtra > 0 && (
-            <View style={[styles.thumb, styles.myPreviewMore]}>
-              <Text style={styles.myPreviewMoreText}>+{myExtra}</Text>
-            </View>
-          )}
-        </View>
-      )}
 
       {feed.contacts.length > 0 && <Text style={styles.sectionTitle}>Recent updates</Text>}
     </View>
@@ -268,11 +253,6 @@ const styles = StyleSheet.create({
 
   thumb: { borderRadius: radii.sm, backgroundColor: colors.surface },
   thumbVideo: { justifyContent: 'center', alignItems: 'center' },
-
-  myPreviewStrip: { flexDirection: 'row', paddingHorizontal: spacing.lg, paddingBottom: spacing.md, gap: spacing.sm },
-  myPreviewThumb: { width: 44, height: 44 },
-  myPreviewMore: { justifyContent: 'center', alignItems: 'center', backgroundColor: colors.surface },
-  myPreviewMoreText: { color: colors.textSecondary, fontWeight: '700', fontSize: 13 },
 
   sectionTitle: {
     fontSize: 13, fontWeight: '700', color: colors.textMuted,
