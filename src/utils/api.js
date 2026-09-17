@@ -551,3 +551,8 @@ export function resetGroupInvite(token, conversationId) {
 export function joinGroupByToken(token, inviteToken) {
   return request(`/conversations/join/${inviteToken}`, { method: 'POST', headers: authHeaders(token) });
 }
+// GET /conversations/join/:token - public group preview, no auth. Used by
+// JoinGroupScreen to show what a link points at before the user joins.
+export function getGroupJoinPreview(inviteToken) {
+  return request(`/conversations/join/${inviteToken}`, { method: 'GET' });
+}

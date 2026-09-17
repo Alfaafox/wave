@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { View, ActivityIndicator, Alert, AppState } from 'react-native';
+import { View, ActivityIndicator, Alert, AppState, Linking } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { StatusBar } from 'expo-status-bar';
 import { KeyboardProvider } from 'react-native-keyboard-controller';
@@ -30,6 +30,7 @@ import ArchivedChatsScreen from './src/screens/ArchivedChatsScreen';
 import StatusCreatorScreen from './src/screens/StatusCreatorScreen';
 import StatusViewerScreen from './src/screens/StatusViewerScreen';
 import GroupInfoScreen from './src/screens/GroupInfoScreen';
+import JoinGroupScreen from './src/screens/JoinGroupScreen';
 import NotificationBanner from './src/components/NotificationBanner';
 import { colors } from './src/theme';
 import { disconnectSocket, connectSocket, getSocket } from './src/utils/socket';
@@ -54,6 +55,7 @@ export default function App() {
   const [activeChat, setActiveChat] = useState(null);
   const [statusViewerGroup, setStatusViewerGroup] = useState(null);
   const [groupInfoConversationId, setGroupInfoConversationId] = useState(null);
+  const [joinInviteToken, setJoinInviteToken] = useState(null);
   const [socket, setSocket] = useState(null);
   const [incomingCall, setIncomingCall] = useState(null);
   const [outgoingCall, setOutgoingCall] = useState(null);
@@ -73,6 +75,17 @@ export default function App() {
   const applyNotifPrefs = useCallback((next) => {
     notifPrefsRef.current = next;
     setNotifPrefs(next);
+  }, []);
+
+  // Deep link -> wave://join/TOKEN or https://waveitchat.com/join/TOKEN (see
+  // app.json's intent filters). Both forms carry the invite token as the
+  // last path segment; JoinGroupScreen does the actual preview + join.
+  const handleDeepLink = useCallback((url) => {
+    if (!url) return;
+    const match = url.match(/\/join\/([^/?#]+)/);
+    if (!match) return;
+    setJoinInviteToken(match[1]);
+    setScreen('joinGroup');
   }, []);
 
   useEffect(() => {
@@ -113,7 +126,13 @@ export default function App() {
         setLoading(false);
       }
     })();
-  }, []);
+
+    // Handle deep link that opened the app cold.
+    Linking.getInitialURL().then((url) => { if (url) handleDeepLink(url); });
+    // Handle deep link while the app is already open.
+    const sub = Linking.addEventListener('url', ({ url }) => handleDeepLink(url));
+    return () => sub.remove();
+  }, [handleDeepLink]);
 
   useEffect(() => {
     if (!token) {
@@ -623,6 +642,14 @@ export default function App() {
               conversationId={groupInfoConversationId}
               onBack={() => setScreen('chat')}
               onLeave={() => setScreen('chatList')}
+            />
+          )}
+          {screen === 'joinGroup' && (
+            <JoinGroupScreen
+              token={token}
+              inviteToken={joinInviteToken}
+              onBack={() => setScreen(token ? 'chatList' : 'login')}
+              onJoined={({ conversationId, name }) => openChat({ conversationId, isGroup: true, groupName: name })}
             />
           )}
           {screen === 'profile' && (

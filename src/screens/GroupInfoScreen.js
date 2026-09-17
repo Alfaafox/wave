@@ -407,7 +407,10 @@ export default function GroupInfoScreen({ token, currentUser, conversationId, on
 
   const handleCopyInvite = () => {
     if (!groupInfo?.inviteToken) return;
-    Clipboard.setString(`wave://join/${groupInfo.inviteToken}`);
+    // https:// is what's actually shareable - it opens in any browser and
+    // deep-links into the app via the /join intent filter (app.json), unlike
+    // wave:// which only resolves on a device that already has Wave installed.
+    Clipboard.setString(`https://waveitchat.com/join/${groupInfo.inviteToken}`);
     Alert.alert('Copied', 'Invite link copied to clipboard.');
   };
 
@@ -564,6 +567,9 @@ export default function GroupInfoScreen({ token, currentUser, conversationId, on
                   <Text style={styles.sectionLabel}>Invite Link</Text>
                   <View style={styles.card}>
                     <Text style={styles.inviteLinkText} numberOfLines={1}>
+                      https://waveitchat.com/join/{groupInfo.inviteToken}
+                    </Text>
+                    <Text style={styles.inviteLinkSubtext} numberOfLines={1}>
                       wave://join/{groupInfo.inviteToken}
                     </Text>
                     <View style={styles.inviteBtnRow}>
@@ -697,7 +703,8 @@ const styles = StyleSheet.create({
   toggleRow: { flexDirection: 'row', alignItems: 'center' },
   toggleLabel: { flex: 1, fontSize: 14, color: colors.textPrimary },
 
-  inviteLinkText: { fontSize: 13, color: colors.textSecondary, marginBottom: spacing.md },
+  inviteLinkText: { fontSize: 13, color: colors.textSecondary },
+  inviteLinkSubtext: { fontSize: 12, color: colors.textMuted, marginTop: 2, marginBottom: spacing.md },
   inviteBtnRow: { flexDirection: 'row', gap: spacing.lg },
   inviteBtn: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   inviteBtnText: { color: colors.accent, fontSize: 13, fontWeight: '600' },

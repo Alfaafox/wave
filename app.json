@@ -3,6 +3,7 @@
     "name": "my-chat-app",
     "slug": "wave",
     "version": "1.0.0",
+    "scheme": "wave",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -26,6 +27,17 @@
         "android.permission.MODIFY_AUDIO_SETTINGS",
         "android.permission.BLUETOOTH_CONNECT",
         "android.permission.USE_FULL_SCREEN_INTENT"
+      ],
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [
+            { "scheme": "wave", "host": "join" },
+            { "scheme": "https", "host": "waveitchat.com", "pathPrefix": "/join" }
+          ],
+          "category": ["BROWSABLE", "DEFAULT"]
+        }
       ]
     },
     "web": {
