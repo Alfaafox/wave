@@ -6,7 +6,7 @@
 // viewer list). Rendered by App.js as a plain full-screen overlay (not a
 // Modal) - same reasoning CallScreen.js documents for its own screen: this
 // needs to sit above the tab bar with no native Dialog-window quirks.
-import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, Image, TextInput,
   Animated, Easing, Pressable, Platform, StatusBar, Alert,
@@ -15,7 +15,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { VideoView, useVideoPlayer } from 'expo-video';
 import { viewStatus, deleteStatus } from '../utils/api';
-import { colors, spacing, radii, shadow } from '../theme';
+import { colors, spacing, radii } from '../theme';
 
 const TOP_INSET = Platform.OS === 'android' ? (StatusBar.currentHeight || 24) + 10 : 54;
 const TEXT_DURATION_MS = 5000;
@@ -70,6 +70,17 @@ export default function StatusViewerScreen({ statusGroup, currentUser, token, on
   const [replyText, setReplyText] = useState('');
   const [viewersSheetOpen, setViewersSheetOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
+
+  // Sticker overlay coordinate space (Session 23) - the same normalized 0-1
+  // x/y StatusCreatorScreen's canvas uses, so a sticker's saved position
+  // maps back onto this exact rect. The media fills this box edge to edge
+  // regardless of which status is active, so one measurement is enough -
+  // no need to re-measure per status.
+  const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
+  const handleMediaLayout = (e) => {
+    const { width, height } = e.nativeEvent.layout;
+    setCanvasSize((prev) => (prev.width === width && prev.height === height ? prev : { width, height }));
+  };
 
   const current = statuses[activeIndex];
 
@@ -186,8 +197,6 @@ export default function StatusViewerScreen({ statusGroup, currentUser, token, on
     );
   };
 
-  const locationLabel = useMemo(() => current?.location?.address || null, [current]);
-
   if (!current) return null;
 
   return (
@@ -195,15 +204,66 @@ export default function StatusViewerScreen({ statusGroup, currentUser, token, on
       <StatusBar barStyle="light-content" backgroundColor="#000" />
 
       {/* Content */}
-      {current.contentType === 'text' ? (
-        <View style={[styles.mediaFill, styles.textFill, { backgroundColor: current.bgColor || colors.accent }]}>
-          <Text style={styles.textContent}>{current.content}</Text>
-        </View>
-      ) : current.contentType === 'video' ? (
-        <StatusVideo uri={current.content} />
-      ) : (
-        <Image source={{ uri: current.content }} style={styles.mediaFill} resizeMode="contain" />
-      )}
+      <View style={styles.mediaFill} onLayout={handleMediaLayout}>
+        {current.contentType === 'text' ? (
+          <View style={[styles.mediaFill, styles.textFill, { backgroundColor: current.bgColor || colors.accent }]}>
+            <Text style={styles.textContent}>{current.content}</Text>
+          </View>
+        ) : current.contentType === 'video' ? (
+          <StatusVideo uri={current.content} />
+        ) : (
+          <Image source={{ uri: current.content }} style={styles.mediaFill} resizeMode="contain" />
+        )}
+
+        {/* Render saved sticker positions - the composer's own normalized
+            0-1 x/y multiplied back against this box's measured size, same
+            coordinate system StatusCreatorScreen's canvas uses. Statuses
+            posted before this feature shipped have no sticker_positions
+            (null) and simply render no stickers - they expire within 24h
+            regardless, so there's no long-lived data to migrate. */}
+        {canvasSize.width > 0 && current.stickerPositions?.map((s) => (
+          <View
+            key={s.id}
+            pointerEvents="none"
+            style={{
+              position: 'absolute',
+              left: s.x * canvasSize.width - 60, // 60 = approx half sticker width
+              top: s.y * canvasSize.height - 20, // 20 = approx half sticker height
+              transform: [
+                { scale: s.scale || 1 },
+                { rotate: `${s.rotation || 0}rad` },
+              ],
+              zIndex: 10,
+            }}
+          >
+            {s.type === 'location' && (
+              <View style={styles.stickerPill}>
+                <Ionicons name="location" size={12} color={colors.textPrimary} />
+                <Text style={styles.stickerPillText} numberOfLines={1}>{s.content}</Text>
+              </View>
+            )}
+            {s.type === 'time' && (
+              <View style={styles.stickerPill}>
+                <Ionicons name="time-outline" size={12} color={colors.textPrimary} />
+                <Text style={styles.stickerPillText}>{s.content}</Text>
+              </View>
+            )}
+            {s.type === 'poll' && s.content?.question && (
+              <View style={styles.stickerPollCard}>
+                <Text style={styles.stickerPollQuestion}>{s.content.question}</Text>
+                {s.content.options?.map((opt, idx) => (
+                  <View key={idx} style={styles.stickerPollOption}>
+                    <Text style={styles.stickerPollOptionText}>{opt}</Text>
+                  </View>
+                ))}
+              </View>
+            )}
+            {s.type === 'text' && s.content?.trim() && (
+              <Text style={styles.stickerTextOverlay}>{s.content}</Text>
+            )}
+          </View>
+        ))}
+      </View>
 
       {/* Tap zones for prev/next + long-press to pause, sit above the media,
           below the chrome (progress bars / header / bottom bar all have
@@ -269,34 +329,11 @@ export default function StatusViewerScreen({ statusGroup, currentUser, token, on
         </View>
       </View>
 
-      {/* Pills + caption, above the bottom bar */}
+      {/* Caption, above the bottom bar. Location/time/poll used to render
+          here too as fixed-position overlays - they're now part of the
+          dynamic sticker_positions renderer above (each at its own composed
+          position, not a stacked column above the caption). */}
       <View style={styles.overlayBottom} pointerEvents="box-none">
-        {locationLabel && (
-          <View style={styles.pill}>
-            <Ionicons name="location" size={14} color={colors.textPrimary} />
-            <Text style={styles.pillText} numberOfLines={1}>{locationLabel}</Text>
-          </View>
-        )}
-        {current.showTime && (
-          <View style={styles.pill}>
-            <Ionicons name="time-outline" size={14} color={colors.textPrimary} />
-            <Text style={styles.pillText}>
-              {new Date(current.createdAt.replace(' ', 'T') + 'Z').toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
-            </Text>
-          </View>
-        )}
-        {current.pollData && (
-          <View style={styles.pollCard}>
-            <Text style={styles.pollQuestion}>{current.pollData.question}</Text>
-            <View style={{ flexDirection: 'row', gap: spacing.sm }}>
-              {current.pollData.options.map((opt, i) => (
-                <View key={i} style={styles.pollOptionPill}>
-                  <Text style={styles.pollOptionText} numberOfLines={1}>{opt}</Text>
-                </View>
-              ))}
-            </View>
-          </View>
-        )}
         {current.caption && (
           <Text style={styles.caption} numberOfLines={3}>{current.caption}</Text>
         )}
@@ -397,20 +434,27 @@ const styles = StyleSheet.create({
   headerTime: { color: 'rgba(255,255,255,0.75)', fontSize: 12, marginTop: 1 },
 
   overlayBottom: { position: 'absolute', left: spacing.lg, right: spacing.lg, bottom: 92, zIndex: 8 },
-  pill: {
-    flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start',
-    backgroundColor: '#fff', borderRadius: radii.pill,
-    paddingHorizontal: spacing.md, paddingVertical: spacing.xs, marginBottom: spacing.sm, ...shadow.md,
-  },
-  pillText: { marginLeft: 6, color: colors.textPrimary, fontSize: 12, fontWeight: '600', maxWidth: 240 },
-  pollCard: { backgroundColor: '#fff', borderRadius: radii.md, padding: spacing.md, marginBottom: spacing.sm, ...shadow.md },
-  pollQuestion: { fontSize: 14, fontWeight: '700', color: colors.textPrimary, marginBottom: spacing.sm, textAlign: 'center' },
-  pollOptionPill: {
-    flex: 1, borderWidth: 1, borderColor: colors.border, borderRadius: radii.pill,
-    paddingVertical: 6, paddingHorizontal: spacing.sm, alignItems: 'center',
-  },
-  pollOptionText: { fontSize: 12, color: colors.textPrimary, fontWeight: '600' },
   caption: { color: '#fff', fontSize: 14, fontWeight: '500', textShadowColor: 'rgba(0,0,0,0.6)', textShadowRadius: 4 },
+
+  // --- Saved sticker positions (Session 23) ---
+  stickerPill: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: '#fff', borderRadius: 20,
+    paddingHorizontal: 10, paddingVertical: 5,
+    shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 4, elevation: 4,
+  },
+  stickerPillText: { marginLeft: 4, fontSize: 12, fontWeight: '600', color: '#1a1a1a', maxWidth: 180 },
+  stickerPollCard: {
+    backgroundColor: '#fff', borderRadius: 12, padding: 12, minWidth: 200,
+    shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 6, elevation: 5,
+  },
+  stickerPollQuestion: { fontSize: 14, fontWeight: '700', color: '#1a1a1a', marginBottom: 8, textAlign: 'center' },
+  stickerPollOption: { backgroundColor: '#f0f0f0', borderRadius: 8, padding: 8, marginBottom: 4 },
+  stickerPollOptionText: { fontSize: 13, color: '#1a1a1a', textAlign: 'center' },
+  stickerTextOverlay: {
+    fontSize: 22, fontWeight: '700', color: '#fff',
+    textShadowColor: 'rgba(0,0,0,0.5)', textShadowOffset: { width: 1, height: 1 }, textShadowRadius: 3,
+  },
 
   bottomBar: { position: 'absolute', left: 0, right: 0, bottom: 0, paddingBottom: spacing.lg, paddingHorizontal: spacing.lg, zIndex: 10 },
   replyRow: { flexDirection: 'row', alignItems: 'center' },

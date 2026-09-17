@@ -640,16 +640,26 @@ export default function StatusCreatorScreen({ token, onDone }) {
 
   // --- Post ------------------------------------------------------------
 
+  // Stickers can be added in EVERY mode (showStickerMenuButton is true for
+  // text mode too - see above), so everything derived from `stickers`
+  // below - the location/show_time/poll_data/caption summary AND the new
+  // full sticker_positions array - has to run regardless of mode, not just
+  // for photo/video. Previously text mode returned immediately with its own
+  // literal payload object and never reached any of this, so any sticker
+  // added to a text status was silently dropped; building `payload` first
+  // and falling through to one shared tail fixes that as a side effect of
+  // making sticker_positions apply everywhere, which is what was actually
+  // asked for here.
   const buildPayload = () => {
+    let payload;
     if (mode === 'text') {
       if (!text.trim()) return { error: 'Write something before posting.' };
-      return { payload: { content_type: 'text', content: text.trim(), bg_color: BG_COLORS[bgColorIndex] } };
+      payload = { content_type: 'text', content: text.trim(), bg_color: BG_COLORS[bgColorIndex] };
+    } else {
+      const dataUri = mode === 'photo' ? photoUri : videoUri;
+      if (!dataUri) return { error: `Pick a ${mode} first.` };
+      payload = { content_type: mode === 'photo' ? 'image' : mode, content: dataUri };
     }
-
-    const dataUri = mode === 'photo' ? photoUri : videoUri;
-    if (!dataUri) return { error: `Pick a ${mode} first.` };
-
-    const payload = { content_type: mode === 'photo' ? 'image' : mode, content: dataUri };
 
     const locationSticker = stickers.find((s) => s.type === 'location' && s.meta);
     if (locationSticker) payload.location = locationSticker.meta;
@@ -677,6 +687,23 @@ export default function StatusCreatorScreen({ token, onDone }) {
       .map((s) => s.content.trim());
     const fullCaption = [caption.trim(), ...textStickerWords].filter(Boolean).join(' - ');
     if (fullCaption) payload.caption = fullCaption.slice(0, 300);
+
+    // Save full sticker array with positions for the viewer to restore -
+    // the fields above are a derived, lossy summary (first-of-each, no x/y/
+    // scale/rotation) kept for older clients; this is the real source of
+    // truth for re-rendering every sticker at its exact composed position.
+    if (stickers.length > 0) {
+      payload.sticker_positions = stickers.map((s) => ({
+        id: s.id,
+        type: s.type,
+        x: s.x,
+        y: s.y,
+        scale: s.scale,
+        rotation: s.rotation || 0,
+        content: s.content,
+        meta: s.meta || null,
+      }));
+    }
 
     return { payload };
   };
