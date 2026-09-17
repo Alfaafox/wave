@@ -639,6 +639,11 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
   const [groupIsAdmin, setGroupIsAdmin] = useState(false);
   const [groupMessagesRestricted, setGroupMessagesRestricted] = useState(false);
   const [groupMembers, setGroupMembers] = useState([]);
+  // Slow mode (conversations.slow_mode, group chats only - server.js's
+  // socket.on('message') is the real enforcement; slowModeRemaining here is
+  // just the client-side cooldown countdown driven by that ack).
+  const [slowModeRemaining, setSlowModeRemaining] = useState(0);
+  const slowModeTimerRef = useRef(null);
   const [mentionQuery, setMentionQuery] = useState(null); // null = not mentioning; string = text typed after the last '@'
   // App.js still owns `groupName` (it's activeChat.groupName, set at
   // navigation time) - this only shadows it when a live group:infoUpdated
@@ -851,6 +856,8 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     }).catch(() => {}); // best-effort - a failed fetch just means no input lock / no @mentions this session
     return () => { cancelled = true; };
   }, [isGroup, conversationId, token]);
+
+  useEffect(() => () => clearInterval(slowModeTimerRef.current), []);
 
   useEffect(() => {
     if (replyTo) {
@@ -1070,6 +1077,14 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
         onBack();
       }
     };
+    // An admin changed the interval (incl. turning it off) mid-cooldown -
+    // drop any countdown already in progress rather than let it run against
+    // a now-stale wait time.
+    const handleSlowModeUpdated = (data) => {
+      if (!isGroup || String(data.conversationId) !== String(conversationId)) return;
+      clearInterval(slowModeTimerRef.current);
+      setSlowModeRemaining(0);
+    };
 
     socket.on('message', handleMessage);
     socket.on('reactionUpdate', handleReactionUpdate);
@@ -1090,6 +1105,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     socket.on('poll:updated', handlePollUpdated);
     socket.on('group:infoUpdated', handleGroupInfoUpdated);
     socket.on('group:memberRemoved', handleGroupMemberRemoved);
+    socket.on('group:slowModeUpdated', handleSlowModeUpdated);
 
     return () => {
       isMounted = false;
@@ -1112,6 +1128,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
       socket.off('poll:updated', handlePollUpdated);
       socket.off('group:infoUpdated', handleGroupInfoUpdated);
       socket.off('group:memberRemoved', handleGroupMemberRemoved);
+      socket.off('group:slowModeUpdated', handleSlowModeUpdated);
       clearTimeout(typingTimeoutRef.current);
       clearTimeout(searchDebounceRef.current);
       // Leaving the chat (unmount) - tell the other side we're done typing,
@@ -1157,6 +1174,17 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
 
     socketRef.current.emit('message', payload, (response) => {
       if (!response?.ok) {
+        if (response?.slowModeRemaining) {
+          setSlowModeRemaining(response.slowModeRemaining);
+          clearInterval(slowModeTimerRef.current);
+          slowModeTimerRef.current = setInterval(() => {
+            setSlowModeRemaining((prev) => {
+              if (prev <= 1) { clearInterval(slowModeTimerRef.current); return 0; }
+              return prev - 1;
+            });
+          }, 1000);
+          return; // slow-mode cooldown, not a real failure - the banner covers it
+        }
         Alert.alert('Message failed', response?.error || 'Could not send message. Try again.');
       }
     });
@@ -3344,6 +3372,15 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
         </Animated.View>
       )}
 
+      {!accountUnavailable && slowModeRemaining > 0 && (
+        <View style={styles.slowModeBanner}>
+          <Ionicons name="time-outline" size={14} color={colors.textSecondary} />
+          <Text style={styles.slowModeBannerText}>
+            Slow mode - wait {slowModeRemaining}s
+          </Text>
+        </View>
+      )}
+
       {!accountUnavailable && !restrictedFromSending && (
       <View style={[styles.inputRow, { paddingBottom: insets.bottom || 8 }]}>
         <TouchableOpacity
@@ -3411,10 +3448,11 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
           </TouchableOpacity>
         ) : (
           <TouchableOpacity
-            style={styles.sendButtonRound}
+            style={[styles.sendButtonRound, slowModeRemaining > 0 && { opacity: 0.5 }]}
             onPress={() => sendMessage()}
             onLongPress={openSchedulePicker}
             delayLongPress={350}
+            disabled={slowModeRemaining > 0}
           >
             <Ionicons name="send" size={18} color={colors.textOnAccent} />
           </TouchableOpacity>
@@ -4082,6 +4120,17 @@ const styles = StyleSheet.create({
   inputRow: {
     flexDirection: 'row', padding: spacing.sm, backgroundColor: colors.background,
     alignItems: 'flex-end', borderTopWidth: 1, borderTopColor: colors.border
+  },
+  slowModeBanner: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: spacing.lg, paddingVertical: 6,
+    backgroundColor: colors.surface,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+    gap: 6,
+  },
+  slowModeBannerText: {
+    fontSize: 12, color: colors.textSecondary,
   },
   attachButton: { padding: spacing.sm, marginRight: 2, minWidth: 30, alignItems: 'center', justifyContent: 'center' },
   emojiButton: { padding: spacing.sm, marginRight: 2, minWidth: 30, alignItems: 'center', justifyContent: 'center' },

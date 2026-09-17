@@ -17,7 +17,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet, Image,
   FlatList, RefreshControl, ActivityIndicator, Alert, Switch,
-  Clipboard, Animated,
+  Clipboard, Animated, Modal,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
@@ -32,6 +32,22 @@ import { colors, spacing, radii, typography, shadow } from '../theme';
 const NAME_MAX = 100;
 const DESCRIPTION_MAX = 500;
 const ICON_MAX_KB = 500;
+
+const SLOW_MODE_OPTIONS = [
+  { value: 0, label: 'Off' },
+  { value: 10, label: '10 seconds' },
+  { value: 30, label: '30 seconds' },
+  { value: 60, label: '1 minute' },
+  { value: 300, label: '5 minutes' },
+  { value: 3600, label: '1 hour' },
+];
+
+function formatSlowMode(seconds) {
+  if (!seconds) return 'Off';
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${seconds / 60}m`;
+  return `${seconds / 3600}h`;
+}
 
 function sortMembers(members) {
   return [...members].sort((a, b) => {
@@ -100,6 +116,8 @@ export default function GroupInfoScreen({ token, currentUser, conversationId, on
   const [memberActionId, setMemberActionId] = useState(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [addingMembers, setAddingMembers] = useState(false);
+  const [showSlowModePicker, setShowSlowModePicker] = useState(false);
+  const [savingSlowMode, setSavingSlowMode] = useState(false);
 
   const loadGroupInfo = useCallback(async ({ silent } = {}) => {
     if (!silent) setLoading(true);
@@ -256,6 +274,21 @@ export default function GroupInfoScreen({ token, currentUser, conversationId, on
       Alert.alert('Could not update', err.message || 'Try again.');
     } finally {
       setTogglingRestricted(false);
+    }
+  };
+
+  const handleSelectSlowMode = async (value) => {
+    const previous = groupInfo.slowMode;
+    setGroupInfo((prev) => ({ ...prev, slowMode: value }));
+    setShowSlowModePicker(false);
+    setSavingSlowMode(true);
+    try {
+      await updateGroupInfo(token, conversationId, { slow_mode: value });
+    } catch (err) {
+      setGroupInfo((prev) => ({ ...prev, slowMode: previous }));
+      Alert.alert('Could not update slow mode', err.message || 'Try again.');
+    } finally {
+      setSavingSlowMode(false);
     }
   };
 
@@ -545,25 +578,53 @@ export default function GroupInfoScreen({ token, currentUser, conversationId, on
                 )}
               </View>
 
+              <Text style={styles.sectionLabel}>Settings</Text>
+              <View style={styles.card}>
+                {isAdmin && (
+                  <View style={[styles.toggleRow, styles.settingRowBorder]}>
+                    <Ionicons name="volume-mute-outline" size={20} color={colors.textSecondary} style={{ marginRight: spacing.sm }} />
+                    <Text style={styles.toggleLabel}>Only Admins Can Send Messages</Text>
+                    {togglingRestricted ? (
+                      <ActivityIndicator color={colors.accent} />
+                    ) : (
+                      <Switch
+                        value={!!groupInfo.messagesRestricted}
+                        onValueChange={handleToggleRestricted}
+                        trackColor={{ false: colors.border, true: colors.accent }}
+                      />
+                    )}
+                  </View>
+                )}
+
+                {/* Visible to every member (not just admins) - it changes
+                    when they're allowed to send, so they need to see it even
+                    though only an admin can change it (disabled below). */}
+                <View style={styles.settingRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.settingLabel}>Slow Mode</Text>
+                    <Text style={styles.settingSubLabel}>
+                      {groupInfo.slowMode > 0 ? `Members wait ${formatSlowMode(groupInfo.slowMode)} between messages` : 'Off'}
+                    </Text>
+                  </View>
+                  {savingSlowMode ? (
+                    <ActivityIndicator color={colors.accent} />
+                  ) : (
+                    <TouchableOpacity
+                      onPress={() => setShowSlowModePicker(true)}
+                      style={styles.slowModeBtn}
+                      disabled={!isAdmin}
+                    >
+                      <Text style={[styles.slowModeBtnText, { color: isAdmin ? colors.accent : colors.textSecondary }]}>
+                        {formatSlowMode(groupInfo.slowMode)}
+                      </Text>
+                      {isAdmin && <Ionicons name="chevron-forward" size={16} color={colors.accent} />}
+                    </TouchableOpacity>
+                  )}
+                </View>
+              </View>
+
               {isAdmin && (
                 <>
-                  <Text style={styles.sectionLabel}>Settings</Text>
-                  <View style={styles.card}>
-                    <View style={styles.toggleRow}>
-                      <Ionicons name="volume-mute-outline" size={20} color={colors.textSecondary} style={{ marginRight: spacing.sm }} />
-                      <Text style={styles.toggleLabel}>Only Admins Can Send Messages</Text>
-                      {togglingRestricted ? (
-                        <ActivityIndicator color={colors.accent} />
-                      ) : (
-                        <Switch
-                          value={!!groupInfo.messagesRestricted}
-                          onValueChange={handleToggleRestricted}
-                          trackColor={{ false: colors.border, true: colors.accent }}
-                        />
-                      )}
-                    </View>
-                  </View>
-
                   <Text style={styles.sectionLabel}>Invite Link</Text>
                   <View style={styles.card}>
                     <Text style={styles.inviteLinkText} numberOfLines={1}>
@@ -657,6 +718,36 @@ export default function GroupInfoScreen({ token, currentUser, conversationId, on
           }}
         />
       )}
+
+      <Modal
+        visible={showSlowModePicker}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowSlowModePicker(false)}
+      >
+        <TouchableOpacity
+          style={styles.sheetOverlay}
+          activeOpacity={1}
+          onPress={() => setShowSlowModePicker(false)}
+        >
+          <TouchableOpacity style={styles.sheet} activeOpacity={1} onPress={() => {}}>
+            <View style={styles.sheetHandle} />
+            <Text style={styles.sheetTitle}>Slow Mode</Text>
+            {SLOW_MODE_OPTIONS.map((opt) => (
+              <TouchableOpacity
+                key={opt.value}
+                style={styles.sheetOption}
+                onPress={() => handleSelectSlowMode(opt.value)}
+              >
+                <Text style={styles.sheetOptionText}>{opt.label}</Text>
+                {groupInfo?.slowMode === opt.value && (
+                  <Ionicons name="checkmark" size={20} color={colors.accent} />
+                )}
+              </TouchableOpacity>
+            ))}
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
     </View>
   );
 }
@@ -702,6 +793,32 @@ const styles = StyleSheet.create({
 
   toggleRow: { flexDirection: 'row', alignItems: 'center' },
   toggleLabel: { flex: 1, fontSize: 14, color: colors.textPrimary },
+  settingRowBorder: { paddingBottom: spacing.md, marginBottom: spacing.md, borderBottomWidth: 1, borderBottomColor: colors.border },
+
+  settingRow: { flexDirection: 'row', alignItems: 'center' },
+  settingLabel: { fontSize: 14, color: colors.textPrimary, fontWeight: '500' },
+  settingSubLabel: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
+  slowModeBtn: { flexDirection: 'row', alignItems: 'center', gap: 2 },
+  slowModeBtnText: { fontSize: 14, fontWeight: '600' },
+
+  sheetOverlay: { flex: 1, backgroundColor: colors.overlay, justifyContent: 'flex-end' },
+  sheet: {
+    backgroundColor: colors.background, borderTopLeftRadius: radii.lg, borderTopRightRadius: radii.lg,
+    paddingHorizontal: spacing.lg, paddingTop: spacing.sm, paddingBottom: spacing.xxl,
+  },
+  sheetHandle: {
+    width: 36, height: 4, borderRadius: 2, backgroundColor: colors.border,
+    alignSelf: 'center', marginBottom: spacing.md,
+  },
+  sheetTitle: {
+    fontSize: 16, fontWeight: '700', color: colors.textPrimary,
+    marginBottom: spacing.sm, paddingHorizontal: spacing.sm,
+  },
+  sheetOption: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingVertical: spacing.md, paddingHorizontal: spacing.sm,
+  },
+  sheetOptionText: { fontSize: 15, color: colors.textPrimary },
 
   inviteLinkText: { fontSize: 13, color: colors.textSecondary },
   inviteLinkSubtext: { fontSize: 12, color: colors.textMuted, marginTop: 2, marginBottom: spacing.md },
