@@ -1,7 +1,9 @@
 // src/screens/StatusCreatorScreen.js
 //
-// Updates / Status composer, Instagram-Stories-style: full-bleed camera-
-// first canvas, floating chrome, draggable/pinchable/deletable stickers.
+// Updates / Status composer, Instagram-Stories-style: full-bleed photo/video/
+// text canvas, floating chrome, draggable/pinchable/rotatable/deletable
+// stickers. No in-app camera capture - Photo mode's gallery picker is the
+// only way to get a photo/video in (see MODES below).
 // No new dependencies - PanResponder + Animated (RN core) only, following
 // this exact codebase's own CropOverlay pattern in ChatScreen.js (snapshot
 // position on grant into a ref, compute every move from that fixed
@@ -52,7 +54,6 @@ const BG_COLORS = [
 ];
 
 const MODES = [
-  { key: 'camera', label: 'Camera' },
   { key: 'photo', label: 'Photo' },
   { key: 'video', label: 'Video' },
   { key: 'text', label: 'Text' },
@@ -83,6 +84,12 @@ function touchDistance(t0, t1) {
   const dx = t0.pageX - t1.pageX;
   const dy = t0.pageY - t1.pageY;
   return Math.sqrt(dx * dx + dy * dy);
+}
+
+function touchAngle(t0, t1) {
+  const dx = t1.pageX - t0.pageX;
+  const dy = t1.pageY - t0.pageY;
+  return Math.atan2(dy, dx);
 }
 
 function formatTimeDate(date) {
@@ -123,6 +130,16 @@ function DraggableSticker({ sticker, canvasSize, onChange, onDelete, onDragStart
   const dragBaseRef = useRef({ x: sticker.x, y: sticker.y });
   const scaleBaseRef = useRef(sticker.scale || 1);
   const pinchDistRef = useRef(null);
+  // Two-finger rotation, tracked the same way pinch-to-resize tracks
+  // distance: snapshot the two-touch angle at gesture start, then the
+  // running delta (current angle - start angle) added to the sticker's
+  // rotation AT START (rotationBaseRef) gives the new absolute rotation.
+  // rotation has no Animated.Value of its own (the transform reads
+  // sticker.rotation straight from the prop - see the render below), so
+  // unlike scale it can only update live by committing to real state on
+  // every move event, not just on release.
+  const pinchAngleRef = useRef(null);
+  const rotationBaseRef = useRef(sticker.rotation || 0);
   const draggingRef = useRef(false);
   const nearTrashRef = useRef(false);
   const liveXYRef = useRef({ x: sticker.x, y: sticker.y });
@@ -150,6 +167,7 @@ function DraggableSticker({ sticker, canvasSize, onChange, onDelete, onDragStart
       onPanResponderGrant: (evt) => {
         dragBaseRef.current = { x: stickerRef.current.x, y: stickerRef.current.y };
         scaleBaseRef.current = stickerRef.current.scale || 1;
+        rotationBaseRef.current = stickerRef.current.rotation || 0;
         liveXYRef.current = { ...dragBaseRef.current };
         liveScaleRef.current = scaleBaseRef.current;
         pan.setValue({ x: 0, y: 0 });
@@ -157,23 +175,38 @@ function DraggableSticker({ sticker, canvasSize, onChange, onDelete, onDragStart
         dyOffsetRef.current = 0;
         const touches = evt.nativeEvent.touches;
         touchCountRef.current = touches.length;
-        pinchDistRef.current = touches.length === 2 ? touchDistance(touches[0], touches[1]) : null;
+        if (touches.length === 2) {
+          pinchDistRef.current = touchDistance(touches[0], touches[1]);
+          pinchAngleRef.current = touchAngle(touches[0], touches[1]);
+        } else {
+          pinchDistRef.current = null;
+          pinchAngleRef.current = null;
+        }
       },
       onPanResponderMove: (evt, gs) => {
         const touches = evt.nativeEvent.touches;
         if (touches.length === 2) {
           touchCountRef.current = 2;
           const dist = touchDistance(touches[0], touches[1]);
-          if (pinchDistRef.current == null) {
+          const angle = touchAngle(touches[0], touches[1]);
+          if (pinchDistRef.current == null || pinchAngleRef.current == null) {
             pinchDistRef.current = dist;
+            pinchAngleRef.current = angle;
           } else if (pinchDistRef.current > 0) {
             const nextScale = clamp(scaleBaseRef.current * (dist / pinchDistRef.current), 0.5, 3.0);
+            const nextRotation = rotationBaseRef.current + (angle - pinchAngleRef.current);
             liveScaleRef.current = nextScale;
             scaleAnim.setValue(nextScale);
+            // rotation has no Animated.Value to drive it live without a
+            // re-render (see the ref comment above) - onChange during move
+            // is the only way to make the twist visually track the fingers
+            // in real time, not just snap into place on release.
+            onChange(stickerRef.current.id, { rotation: nextRotation });
           }
           return;
         }
         pinchDistRef.current = null;
+        pinchAngleRef.current = null;
         const { width, height } = canvasSizeRef.current;
         if (!width || !height) return;
         if (touchCountRef.current === 2) {
@@ -203,6 +236,7 @@ function DraggableSticker({ sticker, canvasSize, onChange, onDelete, onDragStart
       },
       onPanResponderRelease: () => {
         pinchDistRef.current = null;
+        pinchAngleRef.current = null;
         if (draggingRef.current) {
           draggingRef.current = false;
           onDragEnd(stickerRef.current.id);
@@ -214,11 +248,16 @@ function DraggableSticker({ sticker, canvasSize, onChange, onDelete, onDragStart
           }
           nearTrashRef.current = false;
         } else if (liveScaleRef.current !== scaleBaseRef.current) {
+          // Rotation was already committed live during move (see above) -
+          // only scale still needs a final commit here for a pinch-only
+          // gesture (one that never crossed the single-finger-drag
+          // threshold).
           onChange(stickerRef.current.id, { scale: liveScaleRef.current });
         }
       },
       onPanResponderTerminate: () => {
         pinchDistRef.current = null;
+        pinchAngleRef.current = null;
         if (draggingRef.current) {
           draggingRef.current = false;
           onDragEnd(stickerRef.current.id);
@@ -226,6 +265,15 @@ function DraggableSticker({ sticker, canvasSize, onChange, onDelete, onDragStart
         }
         pan.setValue({ x: 0, y: 0 });
         scaleAnim.setValue(scaleBaseRef.current);
+        // Unlike scale (only ever visual until release, see above),
+        // rotation gets committed to real state on every move event, so an
+        // ABORTED gesture (a call coming in mid-twist, say) needs to
+        // explicitly revert it back to where it started - otherwise the
+        // partial rotation would be left stuck in state despite the
+        // gesture never completing.
+        if (stickerRef.current.rotation !== rotationBaseRef.current) {
+          onChange(stickerRef.current.id, { rotation: rotationBaseRef.current });
+        }
       },
     });
   }
@@ -598,7 +646,6 @@ export default function StatusCreatorScreen({ token, onDone }) {
   };
 
   const canPost = useMemo(() => {
-    if (mode === 'camera') return false;
     if (mode === 'text') return !!text.trim();
     return !!(mode === 'photo' ? photoUri : videoUri);
   }, [mode, text, photoUri, videoUri]);
@@ -625,24 +672,6 @@ export default function StatusCreatorScreen({ token, onDone }) {
   const showRepickButton = (mode === 'photo' || mode === 'video') && !!mediaUri;
 
   const renderCanvasContent = () => {
-    if (mode === 'camera') {
-      return (
-        <View style={styles.cameraEmpty}>
-          <Ionicons name="camera-outline" size={72} color="rgba(255,255,255,0.3)" />
-          <Text style={styles.cameraComingSoon}>Camera coming soon</Text>
-          <TouchableOpacity
-            style={styles.galleryPill}
-            onPress={() => goToMode('photo')}
-            activeOpacity={0.85}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-          >
-            <Text style={styles.galleryPillText}>Choose from Gallery</Text>
-            <Ionicons name="arrow-forward" size={16} color={colors.textOnAccent} style={{ marginLeft: 6 }} />
-          </TouchableOpacity>
-        </View>
-      );
-    }
-
     if (mode === 'text') {
       return (
         <View style={styles.textCanvas}>
@@ -723,20 +752,19 @@ export default function StatusCreatorScreen({ token, onDone }) {
               ))}
             </View>
           )}
-        </View>
 
-        {/* Trash zone - appears while any sticker is being dragged. */}
-        <View style={styles.trashZoneWrap} pointerEvents="none">
-          <Animated.View
-            style={[
-              styles.trashZone,
-              trashHover && styles.trashZoneHover,
-              { transform: [{ scale: trashScale }, { scale: trashPulse }] },
-            ]}
-          >
-            <Ionicons name="trash-outline" size={28} color="#fff" />
-          </Animated.View>
-        </View>
+          {/* Trash zone - appears while any sticker is being dragged. */}
+          <View style={styles.trashZoneWrap} pointerEvents="none">
+            <Animated.View
+              style={[
+                styles.trashZone,
+                trashHover && styles.trashZoneHover,
+                { transform: [{ scale: trashScale }, { scale: trashPulse }] },
+              ]}
+            >
+              <Ionicons name="trash-outline" size={28} color="#fff" />
+            </Animated.View>
+          </View>
 
         {/* Top bar */}
         <View style={[styles.topBar, { top: TOP_INSET }]}>
@@ -814,27 +842,10 @@ export default function StatusCreatorScreen({ token, onDone }) {
           </View>
         )}
 
-        {/* Mode carousel */}
-        <View style={styles.carouselBar}>
-          {MODES.map((m) => {
-            const active = mode === m.key;
-            return (
-              <TouchableOpacity
-                key={m.key}
-                style={[styles.carouselBtn, active && styles.carouselBtnActive]}
-                onPress={() => goToMode(m.key)}
-                activeOpacity={0.8}
-                hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
-              >
-                <Text style={[styles.carouselLabel, active && styles.carouselLabelActive]}>
-                  {m.label}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
-        </View>
-
-        {/* Sticker menu bottom sheet */}
+        {/* Sticker menu bottom sheet - moved inside the canvas wrapper below
+            with everything else canvas-scoped; a native <Modal> renders in
+            its own OS-level layer regardless of JSX nesting, so this is
+            purely organizational for it, not a functional stacking fix. */}
         <Modal visible={stickerMenuVisible} transparent animationType="none" onRequestClose={closeStickerMenu}>
           <Animated.View style={[styles.sheetOverlay, { opacity: overlayOpacity }]}>
             <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={closeStickerMenu} />
@@ -865,6 +876,30 @@ export default function StatusCreatorScreen({ token, onDone }) {
             </Animated.View>
           </Animated.View>
         </Modal>
+        </View>
+
+        {/* Mode carousel - always in normal flow at the bottom, a sibling
+            of the canvas View above (not nested inside it, not absolutely
+            positioned) so it's guaranteed to render below everything else
+            with no overlap regardless of what the canvas is showing. */}
+        <View style={styles.carouselBar}>
+          {MODES.map((m) => {
+            const active = mode === m.key;
+            return (
+              <TouchableOpacity
+                key={m.key}
+                style={[styles.carouselBtn, active && styles.carouselBtnActive]}
+                onPress={() => goToMode(m.key)}
+                activeOpacity={0.8}
+                hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+              >
+                <Text style={[styles.carouselLabel, active && styles.carouselLabelActive]}>
+                  {m.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
       </View>
     </KeyboardAvoidingView>
   );
@@ -879,7 +914,7 @@ const styles = StyleSheet.create({
 
   // --- Top bar ---
   topBar: {
-    position: 'absolute', left: 0, right: 0, zIndex: 20,
+    position: 'absolute', left: 0, right: 0, zIndex: 30,
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     paddingHorizontal: spacing.lg,
   },
@@ -905,16 +940,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center', alignItems: 'center',
   },
   trashZoneHover: { backgroundColor: colors.danger },
-
-  // --- Camera mode ---
-  cameraEmpty: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: spacing.xl },
-  cameraComingSoon: { color: 'rgba(255,255,255,0.5)', fontSize: 15, marginTop: spacing.md },
-  galleryPill: {
-    flexDirection: 'row', alignItems: 'center', marginTop: spacing.xl,
-    backgroundColor: colors.accent, borderRadius: radii.pill,
-    paddingHorizontal: spacing.xl, paddingVertical: spacing.md,
-  },
-  galleryPillText: { color: colors.textOnAccent, fontSize: 15, fontWeight: '700' },
 
   // --- Text mode ---
   textCanvas: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: spacing.xl },
@@ -1012,7 +1037,7 @@ const styles = StyleSheet.create({
   },
 
   // --- Sticker menu sheet ---
-  sheetOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
+  sheetOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end', zIndex: 25 },
   sheet: {
     backgroundColor: colors.background,
     borderTopLeftRadius: 20, borderTopRightRadius: 20,
