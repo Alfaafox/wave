@@ -1,9 +1,10 @@
 // src/screens/StatusCreatorScreen.js
 //
-// Updates / Status composer, Instagram-Stories-style: full-bleed photo/video/
-// text canvas, floating chrome, draggable/pinchable/rotatable/deletable
-// stickers. No in-app camera capture - Photo mode's gallery picker is the
-// only way to get a photo/video in (see MODES below).
+// Updates / Status composer, Instagram-Stories-style: full-bleed camera/
+// photo/video/text canvas, floating chrome, draggable/pinchable/rotatable/
+// deletable stickers. Camera mode (expo-camera) captures a photo and hands
+// it straight to Photo mode for stickers/caption/post - there's no
+// separate camera-preview-to-post path, capture always lands in Photo mode.
 // No new dependencies - PanResponder + Animated (RN core) only, following
 // this exact codebase's own CropOverlay pattern in ChatScreen.js (snapshot
 // position on grant into a ref, compute every move from that fixed
@@ -28,13 +29,14 @@ import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet, Image,
   ActivityIndicator, Alert, Animated, Platform, StatusBar, PanResponder,
-  KeyboardAvoidingView, Modal,
+  KeyboardAvoidingView, Modal, Linking,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Location from 'expo-location';
 import { VideoView, useVideoPlayer } from 'expo-video';
+import { CameraView, useCameraPermissions } from 'expo-camera';
 import { createStatus } from '../utils/api';
 import { colors, spacing, radii, shadow } from '../theme';
 
@@ -54,6 +56,7 @@ const BG_COLORS = [
 ];
 
 const MODES = [
+  { key: 'camera', label: 'Camera' },
   { key: 'photo', label: 'Photo' },
   { key: 'video', label: 'Video' },
   { key: 'text', label: 'Text' },
@@ -413,6 +416,16 @@ export default function StatusCreatorScreen({ token, onDone }) {
   const [pickingMedia, setPickingMedia] = useState(false);
   const [caption, setCaption] = useState('');
 
+  // Camera mode. Capture always hands off to Photo mode (setPhotoUri +
+  // setMode('photo')) rather than posting straight from the camera - same
+  // "capture/pick, then sticker/caption/post" flow Photo mode already has
+  // for a gallery pick.
+  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
+  const [cameraFacing, setCameraFacing] = useState('back');
+  const [cameraFlash, setCameraFlash] = useState('off');
+  const cameraRef = useRef(null);
+  const [capturingPhoto, setCapturingPhoto] = useState(false);
+
   // Canvas + stickers
   const canvasSizeRef = useRef({ width: 0, height: 0 });
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
@@ -499,6 +512,29 @@ export default function StatusCreatorScreen({ token, onDone }) {
       setPickingMedia(false);
     }
   }, []);
+
+  // Camera mode's capture button. Same MAX_IMAGE_KB guard as a gallery
+  // pick, then hands off to Photo mode exactly like a gallery pick would -
+  // there's no separate "post straight from camera" path.
+  const handleCapturePhoto = async () => {
+    if (capturingPhoto || !cameraRef.current) return;
+    setCapturingPhoto(true);
+    try {
+      const photo = await cameraRef.current.takePictureAsync({ quality: 0.6, base64: true });
+      if (!photo?.base64) { Alert.alert('Error', 'Could not read the photo.'); return; }
+      const dataUri = `data:image/jpeg;base64,${photo.base64}`;
+      if (approxKb(dataUri) > MAX_IMAGE_KB) {
+        Alert.alert('Photo too large', `About ${approxKb(dataUri)}KB. Try again.`);
+        return;
+      }
+      setPhotoUri(dataUri);
+      setMode('photo');
+    } catch (err) {
+      Alert.alert('Could not take photo', err.message || 'Try again.');
+    } finally {
+      setCapturingPhoto(false);
+    }
+  };
 
   // Auto-launch the picker the first time Photo/Video is entered.
   useEffect(() => {
@@ -646,6 +682,7 @@ export default function StatusCreatorScreen({ token, onDone }) {
   };
 
   const canPost = useMemo(() => {
+    if (mode === 'camera') return false; // capture first - it hands off to Photo mode, never posts directly
     if (mode === 'text') return !!text.trim();
     return !!(mode === 'photo' ? photoUri : videoUri);
   }, [mode, text, photoUri, videoUri]);
@@ -670,8 +707,41 @@ export default function StatusCreatorScreen({ token, onDone }) {
   const showStickerMenuButton = mode === 'text' || !!mediaUri;
   const showCaptionInput = (mode === 'photo' || mode === 'video') && !!mediaUri;
   const showRepickButton = (mode === 'photo' || mode === 'video') && !!mediaUri;
+  // Only once permission is actually granted - the permission-request/
+  // denied screens inside the camera canvas have no use for flip/flash/
+  // gallery/capture.
+  const showCameraControls = mode === 'camera' && !!cameraPermission?.granted;
 
   const renderCanvasContent = () => {
+    if (mode === 'camera') {
+      if (!cameraPermission?.granted) {
+        const isDenied = cameraPermission?.status === 'denied';
+        return (
+          <View style={styles.cameraPermissionScreen}>
+            <Ionicons name="camera-outline" size={64} color="rgba(255,255,255,0.4)" />
+            <Text style={styles.cameraPermissionText}>
+              {isDenied ? 'Camera permission denied. Enable it in Settings.' : 'Camera access needed'}
+            </Text>
+            <TouchableOpacity
+              style={styles.cameraPermissionBtn}
+              onPress={isDenied ? () => Linking.openSettings() : requestCameraPermission}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.cameraPermissionBtnText}>{isDenied ? 'Open Settings' : 'Allow Camera'}</Text>
+            </TouchableOpacity>
+          </View>
+        );
+      }
+      return (
+        <CameraView
+          ref={cameraRef}
+          style={{ flex: 1 }}
+          facing={cameraFacing}
+          flash={cameraFlash}
+        />
+      );
+    }
+
     if (mode === 'text') {
       return (
         <View style={styles.textCanvas}>
@@ -807,6 +877,49 @@ export default function StatusCreatorScreen({ token, onDone }) {
           </TouchableOpacity>
         )}
 
+        {/* Camera mode: flip/flash top-right (below topBar), gallery
+            shortcut bottom-left, capture button bottom-center - all hidden
+            until permission is actually granted (showCameraControls). */}
+        {showCameraControls && (
+          <View style={[styles.cameraTopControls, { top: TOP_INSET + 48 }]}>
+            <TouchableOpacity
+              style={styles.circleBtn}
+              onPress={() => setCameraFacing((f) => (f === 'back' ? 'front' : 'back'))}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Ionicons name="camera-reverse-outline" size={28} color="#fff" />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.circleBtn}
+              onPress={() => setCameraFlash((f) => (f === 'off' ? 'on' : f === 'on' ? 'auto' : 'off'))}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Ionicons name={cameraFlash === 'off' ? 'flash-off-outline' : 'flash-outline'} size={24} color="#fff" />
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {showCameraControls && (
+          <TouchableOpacity
+            style={styles.cameraGalleryBtn}
+            onPress={() => setMode('photo')}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Ionicons name="images-outline" size={28} color="#fff" />
+          </TouchableOpacity>
+        )}
+
+        {showCameraControls && (
+          <TouchableOpacity
+            style={styles.captureBtn}
+            onPress={handleCapturePhoto}
+            disabled={capturingPhoto}
+            activeOpacity={0.8}
+          >
+            {capturingPhoto && <ActivityIndicator color="#000" />}
+          </TouchableOpacity>
+        )}
+
         {/* Text mode: char counter above the swatch row, swatch row above the carousel */}
         {mode === 'text' && (
           <Text style={styles.charCounter}>{text.length}/{TEXT_MAX_LEN}</Text>
@@ -928,6 +1041,27 @@ const styles = StyleSheet.create({
   postSlot: { minWidth: 44, minHeight: 44, justifyContent: 'center', alignItems: 'flex-end' },
   postText: { color: colors.accent, fontSize: 16, fontWeight: '700' },
   postTextDisabled: { color: 'rgba(255,255,255,0.4)' },
+
+  // --- Camera mode ---
+  cameraPermissionScreen: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: spacing.xl },
+  cameraPermissionText: { color: 'rgba(255,255,255,0.7)', fontSize: 15, marginTop: spacing.md, textAlign: 'center' },
+  cameraPermissionBtn: {
+    marginTop: spacing.lg, backgroundColor: colors.accent, borderRadius: radii.pill,
+    paddingHorizontal: spacing.xl, paddingVertical: spacing.md,
+  },
+  cameraPermissionBtnText: { color: colors.textOnAccent, fontSize: 15, fontWeight: '700' },
+  cameraTopControls: { position: 'absolute', right: spacing.lg, flexDirection: 'row', gap: spacing.sm },
+  cameraGalleryBtn: {
+    position: 'absolute', left: spacing.lg, bottom: 36,
+    width: 40, height: 40, borderRadius: 20,
+    backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'center', alignItems: 'center',
+  },
+  captureBtn: {
+    position: 'absolute', left: '50%', marginLeft: -36, bottom: 20,
+    width: 72, height: 72, borderRadius: 36,
+    backgroundColor: '#fff', borderWidth: 4, borderColor: 'rgba(255,255,255,0.4)',
+    justifyContent: 'center', alignItems: 'center',
+  },
 
   // --- Trash zone ---
   trashZoneWrap: {
