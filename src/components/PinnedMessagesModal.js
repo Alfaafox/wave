@@ -8,13 +8,14 @@
 // Tap a row -> jump to that message in the chat. Long-press a row -> Unpin.
 // The parent closes this modal automatically once fewer than 2 pins remain.
 
-import React, { useMemo, useRef } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import {
   Modal, View, Text, ScrollView, TouchableOpacity, Pressable,
-  StyleSheet, Animated, PanResponder, Alert, Dimensions,
+  StyleSheet, Animated, PanResponder, Dimensions,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing, radii, typography } from '../theme';
+import ConfirmModal from './ConfirmModal';
 
 const SCREEN_HEIGHT = Dimensions.get('window').height;
 const DISMISS_THRESHOLD = 60;
@@ -36,6 +37,7 @@ export default function PinnedMessagesModal({ visible, onClose, pins, onJumpTo, 
   const translateY = useRef(new Animated.Value(0)).current;
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+  const [unpinTarget, setUnpinTarget] = useState(null);
 
   const panResponder = useMemo(
     () =>
@@ -61,11 +63,12 @@ export default function PinnedMessagesModal({ visible, onClose, pins, onJumpTo, 
 
   const list = Array.isArray(pins) ? pins : [];
 
-  const handleRowLongPress = (pin) => {
-    Alert.alert('Unpin message?', 'This removes it from the pinned messages for everyone.', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Unpin', style: 'destructive', onPress: () => onUnpin?.(pin) },
-    ]);
+  const handleRowLongPress = (pin) => setUnpinTarget(pin);
+
+  const confirmUnpin = () => {
+    const pin = unpinTarget;
+    setUnpinTarget(null);
+    if (pin) onUnpin?.(pin);
   };
 
   return (
@@ -101,6 +104,16 @@ export default function PinnedMessagesModal({ visible, onClose, pins, onJumpTo, 
           </ScrollView>
         </Animated.View>
       </View>
+
+      <ConfirmModal
+        visible={!!unpinTarget}
+        variant="destructive"
+        title="Unpin message?"
+        body="This removes it from the pinned messages for everyone."
+        confirmLabel="Unpin"
+        onConfirm={confirmUnpin}
+        onCancel={() => setUnpinTarget(null)}
+      />
     </Modal>
   );
 }

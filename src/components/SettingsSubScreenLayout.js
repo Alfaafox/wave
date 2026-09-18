@@ -7,9 +7,9 @@ import { colors, spacing, typography } from '../theme';
 // Appearance, Notifications, Invite a Friend). Keeping the header/back-button
 // implementation in exactly one place means a future styling change only
 // has to happen here, not six times.
-export default function SettingsSubScreenLayout({ title, onBack, children }) {
+export default function SettingsSubScreenLayout({ title, onBack, children, backgroundColor }) {
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, backgroundColor ? { backgroundColor } : null]}>
       <View style={styles.header}>
         <TouchableOpacity onPress={onBack} style={styles.backBtn}>
           <Ionicons name="arrow-back" size={22} color={colors.textPrimary} />

@@ -27,7 +27,7 @@
 // out of scope for a client-only screen rewrite.
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import {
-  View, Text, TextInput, TouchableOpacity, StyleSheet, Image,
+  View, Text, TextInput, TouchableOpacity, Pressable, StyleSheet, Image,
   ActivityIndicator, Alert, Animated, Platform, StatusBar, PanResponder,
   KeyboardAvoidingView, Modal, Linking,
 } from 'react-native';
@@ -882,14 +882,14 @@ export default function StatusCreatorScreen({ token, onDone }) {
               <ActivityIndicator size="small" color={colors.accent} />
             </View>
           ) : (
-            <TouchableOpacity
-              style={styles.postSlot}
+            <Pressable
+              style={[styles.postButton, !canPost && styles.postButtonDisabled]}
               onPress={handlePost}
               disabled={!canPost}
               hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
             >
-              <Text style={[styles.postText, !canPost && styles.postTextDisabled]}>Post</Text>
-            </TouchableOpacity>
+              <Text style={styles.postButtonText}>Post</Text>
+            </Pressable>
           )}
         </View>
 
@@ -1066,8 +1066,14 @@ const styles = StyleSheet.create({
   circleBtnGhost: { width: 40, height: 40 },
   repickBtn: { position: 'absolute', left: spacing.lg },
   postSlot: { minWidth: 44, minHeight: 44, justifyContent: 'center', alignItems: 'flex-end' },
-  postText: { color: colors.accent, fontSize: 16, fontWeight: '700' },
-  postTextDisabled: { color: 'rgba(255,255,255,0.4)' },
+  postButton: {
+    backgroundColor: colors.primary,
+    paddingHorizontal: 20,
+    paddingVertical: 8,
+    borderRadius: 20,
+  },
+  postButtonDisabled: { opacity: 0.4 },
+  postButtonText: { color: colors.textOnAccent, fontSize: 15, fontWeight: '600' },
 
   // --- Camera mode ---
   cameraPermissionScreen: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: spacing.xl },

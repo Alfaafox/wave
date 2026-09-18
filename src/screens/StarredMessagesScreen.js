@@ -12,6 +12,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing } from '../theme';
 import { getStarredMessages, getConversations, unstarMessage } from '../utils/api';
+import ConfirmModal from '../components/ConfirmModal';
 
 const PAGE = 20;
 
@@ -48,6 +49,7 @@ export default function StarredMessagesScreen({ token, onBack, onOpenChat }) {
   // conversationId -> full conversation object from GET /conversations, so a
   // row tap can hand ChatScreen the same rich `with` object ChatListScreen does.
   const convMapRef = useRef({});
+  const [unstarTarget, setUnstarTarget] = useState(null);
 
   const load = useCallback(async (offset) => {
     const data = await getStarredMessages(token, { limit: PAGE, offset });
@@ -116,26 +118,22 @@ export default function StarredMessagesScreen({ token, onBack, onOpenChat }) {
     });
   };
 
-  const unstarRow = (item) => {
-    Alert.alert('Unstar message?', 'This removes it from Starred Messages.', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Unstar',
-        style: 'destructive',
-        onPress: async () => {
-          const prev = items;
-          setItems((cur) => cur.filter((m) => m.id !== item.id));
-          setTotal((t) => Math.max(0, t - 1));
-          try {
-            await unstarMessage(token, item.conversation_id, item.id);
-          } catch (err) {
-            setItems(prev);
-            setTotal((t) => t + 1);
-            Alert.alert('Could not unstar', err.message);
-          }
-        },
-      },
-    ]);
+  const unstarRow = (item) => setUnstarTarget(item);
+
+  const confirmUnstar = async () => {
+    const item = unstarTarget;
+    setUnstarTarget(null);
+    if (!item) return;
+    const prev = items;
+    setItems((cur) => cur.filter((m) => m.id !== item.id));
+    setTotal((t) => Math.max(0, t - 1));
+    try {
+      await unstarMessage(token, item.conversation_id, item.id);
+    } catch (err) {
+      setItems(prev);
+      setTotal((t) => t + 1);
+      Alert.alert('Could not unstar', err.message);
+    }
   };
 
   const renderItem = ({ item }) => {
@@ -212,6 +210,16 @@ export default function StarredMessagesScreen({ token, onBack, onOpenChat }) {
           }
         />
       )}
+
+      <ConfirmModal
+        visible={!!unstarTarget}
+        variant="destructive"
+        title="Unstar message?"
+        body="This removes it from Starred Messages."
+        confirmLabel="Unstar"
+        onConfirm={confirmUnstar}
+        onCancel={() => setUnstarTarget(null)}
+      />
     </View>
   );
 }

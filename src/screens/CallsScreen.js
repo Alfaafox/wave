@@ -7,6 +7,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing } from '../theme';
 import { getCallHistory, deleteCall, clearCallHistory, startConversation } from '../utils/api';
 import { getSocket } from '../utils/socket';
+import ConfirmModal from '../components/ConfirmModal';
+import EmptyState from '../components/EmptyState';
 
 function formatTime(iso) {
   if (!iso) return '';
@@ -147,6 +149,9 @@ export default function CallsScreen({ token, currentUser, onStartCall, onOpenCha
   const [hasMore, setHasMore] = useState(true);
   const [error, setError] = useState(null);
   const [detailsFor, setDetailsFor] = useState(null);
+  const [modal, setModal] = useState({ visible: false });
+  const showModal = (config) => setModal({ visible: true, ...config });
+  const hideModal = () => setModal({ visible: false });
 
   const load = useCallback(async () => {
     try {
@@ -206,23 +211,22 @@ export default function CallsScreen({ token, currentUser, onStartCall, onOpenCha
   };
 
   const handleClearAll = () => {
-    Alert.alert('Clear call history?', 'This removes all calls from your list.', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Clear all',
-        style: 'destructive',
-        onPress: async () => {
-          const previous = calls;
-          setCalls([]);
-          try {
-            await clearCallHistory(token);
-          } catch (err) {
-            Alert.alert('Could not clear history', err.message);
-            setCalls(previous);
-          }
-        },
+    showModal({
+      variant: 'destructive',
+      title: 'Clear call history',
+      body: 'All call records will be permanently deleted.',
+      confirmLabel: 'Clear all',
+      onConfirm: async () => {
+        const previous = calls;
+        setCalls([]);
+        try {
+          await clearCallHistory(token);
+        } catch (err) {
+          Alert.alert('Could not clear history', err.message);
+          setCalls(previous);
+        }
       },
-    ]);
+    });
   };
 
   const handleCall = (call, callType) => {
@@ -268,13 +272,11 @@ export default function CallsScreen({ token, currentUser, onStartCall, onOpenCha
           <Text style={styles.emptySubtitle}>Loading...</Text>
         </View>
       ) : calls.length === 0 ? (
-        <View style={styles.emptyState}>
-          <Ionicons name="call-outline" size={48} color={colors.textMuted} />
-          <Text style={styles.emptyTitle}>No call history yet</Text>
-          <Text style={styles.emptySubtitle}>
-            {error ? `Couldn't load calls: ${error}` : 'Your voice and video calls will appear here.'}
-          </Text>
-        </View>
+        <EmptyState
+          icon="phone"
+          title="No calls yet"
+          body={error ? `Couldn't load calls: ${error}` : 'Your call history will appear here'}
+        />
       ) : (
         <SectionList
           sections={sections}
@@ -366,6 +368,17 @@ export default function CallsScreen({ token, currentUser, onStartCall, onOpenCha
           )}
         </TouchableOpacity>
       </Modal>
+
+      <ConfirmModal
+        visible={modal.visible}
+        variant={modal.variant}
+        title={modal.title}
+        body={modal.body}
+        confirmLabel={modal.confirmLabel}
+        cancelLabel={modal.cancelLabel}
+        onConfirm={() => { hideModal(); modal.onConfirm?.(); }}
+        onCancel={hideModal}
+      />
     </View>
   );
 }

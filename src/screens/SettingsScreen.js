@@ -2,6 +2,7 @@ import React from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Image, ScrollView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing, radii, shadow } from '../theme';
+import WaveButton from '../components/WaveButton';
 
 const SETTINGS_ROWS = [
   { key: 'account', label: 'Account', icon: 'person-circle-outline' },
@@ -57,16 +58,16 @@ export default function SettingsScreen({
           ))}
         </View>
 
-        <TouchableOpacity style={styles.logoutButton} onPress={onLogout} activeOpacity={0.8}>
-          <Text style={styles.logoutText}>Log out</Text>
-        </TouchableOpacity>
+        <View style={styles.logoutButtonWrap}>
+          <WaveButton variant="destructive" label="Log out" fullWidth onPress={onLogout} />
+        </View>
       </ScrollView>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
+  container: { flex: 1, backgroundColor: colors.screenBackground },
   header: {
     flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.lg,
     paddingTop: 50, paddingBottom: spacing.md,
@@ -102,10 +103,5 @@ const styles = StyleSheet.create({
   rowLast: { borderBottomWidth: 0 },
   rowLabel: { flex: 1, fontSize: 15, color: colors.textPrimary },
 
-  logoutButton: {
-    marginTop: spacing.xl, marginHorizontal: spacing.lg,
-    backgroundColor: colors.background, borderWidth: 1, borderColor: colors.danger,
-    borderRadius: radii.sm, padding: spacing.md, alignItems: 'center'
-  },
-  logoutText: { color: colors.danger, fontSize: 16, fontWeight: '600' }
+  logoutButtonWrap: { marginTop: spacing.xl, marginHorizontal: spacing.lg },
 });

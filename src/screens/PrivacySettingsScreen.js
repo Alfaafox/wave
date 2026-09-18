@@ -2,6 +2,7 @@
 import { View, Text, TouchableOpacity, StyleSheet, Switch, Alert, ActivityIndicator, Image, FlatList } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import SettingsSubScreenLayout from '../components/SettingsSubScreenLayout';
+import ConfirmModal from '../components/ConfirmModal';
 import { getPrivacySettings, updatePrivacySettings, unblockUser } from '../utils/api';
 import { colors, spacing, radii, shadow } from '../theme';
 
@@ -13,6 +14,9 @@ export default function PrivacySettingsScreen({ token, onBack }) {
   const [blockedUsers, setBlockedUsers] = useState([]);
   const [savingField, setSavingField] = useState(null);
   const [unblockingId, setUnblockingId] = useState(null);
+  const [modal, setModal] = useState({ visible: false });
+  const showModal = (config) => setModal({ visible: true, ...config });
+  const hideModal = () => setModal({ visible: false });
 
   const load = useCallback(async () => {
     try {
@@ -76,36 +80,35 @@ export default function PrivacySettingsScreen({ token, onBack }) {
   };
 
   const handleUnblock = (user) => {
-    Alert.alert('Unblock ' + user.name + '?', 'They will be able to message you again.', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Unblock',
-        style: 'destructive',
-        onPress: async () => {
-          setUnblockingId(user.id);
-          try {
-            await unblockUser(token, user.id);
-            setBlockedUsers((prev) => prev.filter((u) => u.id !== user.id));
-          } catch (err) {
-            Alert.alert('Could not unblock', err.message);
-          } finally {
-            setUnblockingId(null);
-          }
+    showModal({
+      variant: 'confirm',
+      title: `Unblock ${user.name}`,
+      body: 'They will be able to send you messages again.',
+      confirmLabel: 'Unblock',
+      onConfirm: async () => {
+        setUnblockingId(user.id);
+        try {
+          await unblockUser(token, user.id);
+          setBlockedUsers((prev) => prev.filter((u) => u.id !== user.id));
+        } catch (err) {
+          Alert.alert('Could not unblock', err.message);
+        } finally {
+          setUnblockingId(null);
         }
-      }
-    ]);
+      },
+    });
   };
 
   if (loading) {
     return (
-      <SettingsSubScreenLayout title="Privacy" onBack={onBack}>
+      <SettingsSubScreenLayout title="Privacy" onBack={onBack} backgroundColor={colors.screenBackground}>
         <ActivityIndicator color={colors.accent} style={{ marginTop: spacing.xxl }} />
       </SettingsSubScreenLayout>
     );
   }
 
   return (
-    <SettingsSubScreenLayout title="Privacy" onBack={onBack}>
+    <SettingsSubScreenLayout title="Privacy" onBack={onBack} backgroundColor={colors.screenBackground}>
       <Text style={styles.sectionLabel}>Last Seen</Text>
       <View style={styles.card}>
         <View style={styles.toggleRow}>
@@ -116,7 +119,13 @@ export default function PrivacySettingsScreen({ token, onBack }) {
           {savingField === 'lastSeen' ? (
             <ActivityIndicator color={colors.accent} />
           ) : (
-            <Switch value={lastSeenVisible} onValueChange={handleToggleLastSeen} trackColor={{ false: colors.border, true: colors.accent }} />
+            <Switch
+              value={lastSeenVisible}
+              onValueChange={handleToggleLastSeen}
+              trackColor={{ false: colors.toggleInactive, true: colors.toggleActive }}
+              thumbColor={colors.surfaceElevated}
+              ios_backgroundColor={colors.toggleInactive}
+            />
           )}
         </View>
       </View>
@@ -131,7 +140,13 @@ export default function PrivacySettingsScreen({ token, onBack }) {
           {savingField === 'readReceipts' ? (
             <ActivityIndicator color={colors.accent} />
           ) : (
-            <Switch value={readReceiptsEnabled} onValueChange={handleToggleReadReceipts} trackColor={{ false: colors.border, true: colors.accent }} />
+            <Switch
+              value={readReceiptsEnabled}
+              onValueChange={handleToggleReadReceipts}
+              trackColor={{ false: colors.toggleInactive, true: colors.toggleActive }}
+              thumbColor={colors.surfaceElevated}
+              ios_backgroundColor={colors.toggleInactive}
+            />
           )}
         </View>
       </View>
@@ -149,7 +164,9 @@ export default function PrivacySettingsScreen({ token, onBack }) {
             <Switch
               value={whoCanAddToGroups === 'everyone'}
               onValueChange={handleToggleWhoCanAdd}
-              trackColor={{ false: colors.border, true: colors.accent }}
+              trackColor={{ false: colors.toggleInactive, true: colors.toggleActive }}
+              thumbColor={colors.surfaceElevated}
+              ios_backgroundColor={colors.toggleInactive}
             />
           )}
         </View>
@@ -190,6 +207,17 @@ export default function PrivacySettingsScreen({ token, onBack }) {
           conversation itself, not from this list.
         </Text>
       </View>
+
+      <ConfirmModal
+        visible={modal.visible}
+        variant={modal.variant}
+        title={modal.title}
+        body={modal.body}
+        confirmLabel={modal.confirmLabel}
+        cancelLabel={modal.cancelLabel}
+        onConfirm={() => { hideModal(); modal.onConfirm?.(); }}
+        onCancel={hideModal}
+      />
     </SettingsSubScreenLayout>
   );
 }

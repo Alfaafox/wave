@@ -35,14 +35,14 @@ export default function NotificationsSettingsScreen({ onBack, onPrefsChange }) {
 
   if (loading) {
     return (
-      <SettingsSubScreenLayout title="Notifications" onBack={onBack}>
+      <SettingsSubScreenLayout title="Notifications" onBack={onBack} backgroundColor={colors.screenBackground}>
         <ActivityIndicator color={colors.accent} style={{ marginTop: spacing.xxl }} />
       </SettingsSubScreenLayout>
     );
   }
 
   return (
-    <SettingsSubScreenLayout title="Notifications" onBack={onBack}>
+    <SettingsSubScreenLayout title="Notifications" onBack={onBack} backgroundColor={colors.screenBackground}>
       <Text style={styles.sectionLabel}>Messages</Text>
       <View style={styles.card}>
         <ToggleRow
@@ -94,7 +94,9 @@ function ToggleRow({ label, hint, value, onValueChange, last }) {
       <Switch
         value={value}
         onValueChange={onValueChange}
-        trackColor={{ false: colors.border, true: colors.accent }}
+        trackColor={{ false: colors.toggleInactive, true: colors.toggleActive }}
+        thumbColor={colors.surfaceElevated}
+        ios_backgroundColor={colors.toggleInactive}
       />
     </View>
   );

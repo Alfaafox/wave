@@ -24,6 +24,7 @@ import {
 import { isFavourite, toggleFavourite } from '../utils/favourites';
 import FavouriteStar from './FavouriteStar';
 import ImageViewerModal from './ImageViewerModal';
+import ConfirmModal from './ConfirmModal';
 
 const SCREEN_HEIGHT = Dimensions.get('window').height;
 // Drag the handle down more than this many px and the sheet closes.
@@ -95,6 +96,11 @@ export default function UserProfileModal({
   const [membersLoading, setMembersLoading] = useState(false);
   const [photoViewerOpen, setPhotoViewerOpen] = useState(false);
   const [privateBusy, setPrivateBusy] = useState(false);
+  // Shared confirm-dialog state for the Private Chat toggle + Leave Group
+  // (block/unblock keeps its own Alert.alert - not migrated here).
+  const [confirmDialog, setConfirmDialog] = useState({ visible: false });
+  const showConfirm = (config) => setConfirmDialog({ visible: true, ...config });
+  const hideConfirm = () => setConfirmDialog({ visible: false });
 
   const otherId = otherUser?.id ?? null;
   const avatarUri = isGroup ? null : otherUser?.profilePicture || null;
@@ -223,52 +229,45 @@ export default function UserProfileModal({
   const openPrivateChatDialog = () => {
     if (privateBusy) return;
     const on = !!privateChat;
-    Alert.alert(
-      'Private Chat',
-      'Private Chat adds these protections to this conversation:\n\n'
+    showConfirm({
+      variant: on ? 'destructive' : 'confirm',
+      title: 'Private Chat',
+      body: 'Private Chat adds these protections to this conversation:\n\n'
         + '- Messages disappear after 7 days\n'
         + '- Read receipts are turned off\n'
         + '- Notifications hide message content\n\n'
         + (on
           ? 'It is currently ON. Both of you will see a note in the chat if you turn it off.'
           : 'Both of you will see a note in the chat when it is turned on.'),
-      on
-        ? [
-            { text: 'Cancel', style: 'cancel' },
-            { text: 'Disable Private Chat', style: 'destructive', onPress: () => applyPrivateChat(false) },
-          ]
-        : [
-            { text: 'Cancel', style: 'cancel' },
-            { text: 'Enable Private Chat', onPress: () => applyPrivateChat(true) },
-          ]
-    );
+      confirmLabel: on ? 'Disable Private Chat' : 'Enable Private Chat',
+      onConfirm: () => applyPrivateChat(!on),
+    });
   };
 
   const handleLeaveGroup = () => {
     if (leaveBusy) return;
-    Alert.alert('Leave group?', `You will stop receiving messages from "${groupName || 'this group'}".`, [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Leave',
-        style: 'destructive',
-        onPress: async () => {
-          setLeaveBusy(true);
-          try {
-            // POST /leave, not the generic DELETE /conversations/:id - the
-            // dedicated endpoint auto-promotes a successor when the leaver
-            // is the group's only admin (see routes/conversations.js);
-            // the generic delete has no idea about roles at all.
-            await leaveGroup(token, conversationId);
-            onClose();
-            onLeaveGroup?.();
-          } catch (err) {
-            Alert.alert('Could not leave group', err.message);
-          } finally {
-            setLeaveBusy(false);
-          }
-        },
+    showConfirm({
+      variant: 'destructive',
+      title: 'Leave group?',
+      body: `You will stop receiving messages from "${groupName || 'this group'}".`,
+      confirmLabel: 'Leave',
+      onConfirm: async () => {
+        setLeaveBusy(true);
+        try {
+          // POST /leave, not the generic DELETE /conversations/:id - the
+          // dedicated endpoint auto-promotes a successor when the leaver
+          // is the group's only admin (see routes/conversations.js);
+          // the generic delete has no idea about roles at all.
+          await leaveGroup(token, conversationId);
+          onClose();
+          onLeaveGroup?.();
+        } catch (err) {
+          Alert.alert('Could not leave group', err.message);
+        } finally {
+          setLeaveBusy(false);
+        }
       },
-    ]);
+    });
   };
 
   if (!visible) return null;
@@ -426,6 +425,17 @@ export default function UserProfileModal({
         visible={photoViewerOpen && !!avatarUri}
         uri={avatarUri}
         onClose={() => setPhotoViewerOpen(false)}
+      />
+
+      <ConfirmModal
+        visible={confirmDialog.visible}
+        variant={confirmDialog.variant}
+        title={confirmDialog.title}
+        body={confirmDialog.body}
+        confirmLabel={confirmDialog.confirmLabel}
+        cancelLabel={confirmDialog.cancelLabel}
+        onConfirm={() => { hideConfirm(); confirmDialog.onConfirm?.(); }}
+        onCancel={hideConfirm}
       />
     </>
   );

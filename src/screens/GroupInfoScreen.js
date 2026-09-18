@@ -22,6 +22,8 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import ContactPickerScreen from './ContactPickerScreen';
+import ConfirmModal from '../components/ConfirmModal';
+import WaveButton from '../components/WaveButton';
 import { connectSocket } from '../utils/socket';
 import {
   getGroupInfo, updateGroupInfo, addGroupMembers, removeGroupMember,
@@ -118,6 +120,9 @@ export default function GroupInfoScreen({ token, currentUser, conversationId, on
   const [addingMembers, setAddingMembers] = useState(false);
   const [showSlowModePicker, setShowSlowModePicker] = useState(false);
   const [savingSlowMode, setSavingSlowMode] = useState(false);
+  const [modal, setModal] = useState({ visible: false });
+  const showModal = (config) => setModal({ visible: true, ...config });
+  const hideModal = () => setModal({ visible: false });
 
   const loadGroupInfo = useCallback(async ({ silent } = {}) => {
     if (!silent) setLoading(true);
@@ -382,14 +387,13 @@ export default function GroupInfoScreen({ token, currentUser, conversationId, on
   };
 
   const confirmRemove = (member) => {
-    Alert.alert(
-      `Remove ${member.name || 'this member'}?`,
-      'They will be removed from the group immediately.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Remove', style: 'destructive', onPress: () => handleRemove(member) },
-      ]
-    );
+    showModal({
+      variant: 'destructive',
+      title: `Remove ${member.name || 'this member'}`,
+      body: 'This person will be removed from the group.',
+      confirmLabel: 'Remove',
+      onConfirm: () => handleRemove(member),
+    });
   };
 
   const handleMemberLongPress = (member) => {
@@ -415,27 +419,23 @@ export default function GroupInfoScreen({ token, currentUser, conversationId, on
   };
 
   const handleResetInvite = () => {
-    Alert.alert(
-      'Reset invite link?',
-      'The old link will stop working immediately.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Reset', style: 'destructive',
-          onPress: async () => {
-            setResettingInvite(true);
-            try {
-              const result = await resetGroupInvite(token, conversationId);
-              setGroupInfo((prev) => ({ ...prev, inviteToken: result.inviteToken }));
-            } catch (err) {
-              Alert.alert('Could not reset link', err.message || 'Try again.');
-            } finally {
-              setResettingInvite(false);
-            }
-          }
+    showModal({
+      variant: 'warning',
+      title: 'Reset invite link',
+      body: 'The old link will stop working immediately. A new link will be generated.',
+      confirmLabel: 'Reset link',
+      onConfirm: async () => {
+        setResettingInvite(true);
+        try {
+          const result = await resetGroupInvite(token, conversationId);
+          setGroupInfo((prev) => ({ ...prev, inviteToken: result.inviteToken }));
+        } catch (err) {
+          Alert.alert('Could not reset link', err.message || 'Try again.');
+        } finally {
+          setResettingInvite(false);
         }
-      ]
-    );
+      },
+    });
   };
 
   const handleCopyInvite = () => {
@@ -449,28 +449,24 @@ export default function GroupInfoScreen({ token, currentUser, conversationId, on
 
   const handleLeaveGroup = () => {
     const soleAdmin = isAdmin && groupInfo.members.filter((m) => m.role === 'admin').length === 1 && groupInfo.members.length > 1;
-    Alert.alert(
-      'Leave group?',
-      soleAdmin
-        ? 'You are the only admin. Another member will automatically become admin when you leave.'
+    showModal({
+      variant: 'destructive',
+      title: 'Leave group',
+      body: soleAdmin
+        ? 'You will no longer receive messages from this group. You are the only admin - another member will automatically become admin when you leave.'
         : 'You will no longer receive messages from this group.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Leave', style: 'destructive',
-          onPress: async () => {
-            setLeaving(true);
-            try {
-              await leaveGroup(token, conversationId);
-              onLeave();
-            } catch (err) {
-              Alert.alert('Could not leave group', err.message || 'Try again.');
-              setLeaving(false);
-            }
-          }
+      confirmLabel: 'Leave group',
+      onConfirm: async () => {
+        setLeaving(true);
+        try {
+          await leaveGroup(token, conversationId);
+          onLeave();
+        } catch (err) {
+          Alert.alert('Could not leave group', err.message || 'Try again.');
+          setLeaving(false);
         }
-      ]
-    );
+      },
+    });
   };
 
   if (pickerOpen) {
@@ -630,9 +626,6 @@ export default function GroupInfoScreen({ token, currentUser, conversationId, on
                     <Text style={styles.inviteLinkText} numberOfLines={1}>
                       https://waveitchat.com/join/{groupInfo.inviteToken}
                     </Text>
-                    <Text style={styles.inviteLinkSubtext} numberOfLines={1}>
-                      wave://join/{groupInfo.inviteToken}
-                    </Text>
                     <View style={styles.inviteBtnRow}>
                       <TouchableOpacity style={styles.inviteBtn} onPress={handleCopyInvite}>
                         <Ionicons name="copy-outline" size={16} color={colors.accent} />
@@ -677,16 +670,16 @@ export default function GroupInfoScreen({ token, currentUser, conversationId, on
             </View>
           }
           ListFooterComponent={
-            <TouchableOpacity style={styles.leaveBtn} onPress={handleLeaveGroup} disabled={leaving}>
-              {leaving ? (
-                <ActivityIndicator color={colors.danger} />
-              ) : (
-                <>
-                  <Ionicons name="log-out-outline" size={18} color={colors.danger} style={{ marginRight: spacing.sm }} />
-                  <Text style={styles.leaveBtnText}>Leave Group</Text>
-                </>
-              )}
-            </TouchableOpacity>
+            <View style={styles.leaveBtnWrap}>
+              <WaveButton
+                variant="destructive"
+                label="Leave group"
+                icon="log-out-outline"
+                fullWidth
+                loading={leaving}
+                onPress={handleLeaveGroup}
+              />
+            </View>
           }
           renderItem={({ item }) => {
             const isOwner = item.id === groupInfo.ownerId;
@@ -748,12 +741,23 @@ export default function GroupInfoScreen({ token, currentUser, conversationId, on
           </TouchableOpacity>
         </TouchableOpacity>
       </Modal>
+
+      <ConfirmModal
+        visible={modal.visible}
+        variant={modal.variant}
+        title={modal.title}
+        body={modal.body}
+        confirmLabel={modal.confirmLabel}
+        cancelLabel={modal.cancelLabel}
+        onConfirm={() => { hideModal(); modal.onConfirm?.(); }}
+        onCancel={hideModal}
+      />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
+  container: { flex: 1, backgroundColor: colors.screenBackground },
   header: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     paddingHorizontal: spacing.lg, paddingTop: 50, paddingBottom: spacing.md,
@@ -820,8 +824,7 @@ const styles = StyleSheet.create({
   },
   sheetOptionText: { fontSize: 15, color: colors.textPrimary },
 
-  inviteLinkText: { fontSize: 13, color: colors.textSecondary },
-  inviteLinkSubtext: { fontSize: 12, color: colors.textMuted, marginTop: 2, marginBottom: spacing.md },
+  inviteLinkText: { fontSize: 13, color: colors.textSecondary, marginBottom: spacing.md },
   inviteBtnRow: { flexDirection: 'row', gap: spacing.lg },
   inviteBtn: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   inviteBtnText: { color: colors.accent, fontSize: 13, fontWeight: '600' },
@@ -842,13 +845,9 @@ const styles = StyleSheet.create({
   memberName: { fontSize: 15, color: colors.textPrimary, fontWeight: '500', flexShrink: 1 },
   memberRoleText: { fontSize: 12, color: colors.textMuted, marginTop: 1 },
 
-  leaveBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+  leaveBtnWrap: {
     marginHorizontal: spacing.lg, marginTop: spacing.xl, marginBottom: spacing.xxl,
-    paddingVertical: spacing.md, borderRadius: radii.md,
-    borderWidth: 1, borderColor: colors.danger,
   },
-  leaveBtnText: { color: colors.danger, fontSize: 15, fontWeight: '700' },
 
   emptyState: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: spacing.xl },
   emptyTitle: { fontSize: 16, fontWeight: '600', color: colors.textPrimary, marginTop: spacing.md },

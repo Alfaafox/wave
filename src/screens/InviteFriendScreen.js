@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Share, Alert } from 'react-native';
+import { View, Text, StyleSheet, Share, Alert } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import SettingsSubScreenLayout from '../components/SettingsSubScreenLayout';
+import WaveButton from '../components/WaveButton';
 import { colors, spacing, radii, shadow } from '../theme';
 
 // NOTE: this message currently has no real download link to point people to,
@@ -35,10 +36,14 @@ export default function InviteFriendScreen({ onBack }) {
           Share Wave with anyone - it opens your phone's normal share menu, so you can send it
           via text, email, or any app you already use.
         </Text>
-        <TouchableOpacity style={styles.inviteButton} onPress={handleInvite} disabled={sharing} activeOpacity={0.85}>
-          <Ionicons name="share-social-outline" size={18} color={colors.textOnAccent} style={{ marginRight: spacing.sm }} />
-          <Text style={styles.inviteButtonText}>{sharing ? 'Opening...' : 'Invite a Friend'}</Text>
-        </TouchableOpacity>
+        <WaveButton
+          variant="primary"
+          label="Invite a Friend"
+          icon="share-social-outline"
+          fullWidth
+          loading={sharing}
+          onPress={handleInvite}
+        />
       </View>
     </SettingsSubScreenLayout>
   );
@@ -51,10 +56,4 @@ const styles = StyleSheet.create({
   },
   title: { fontSize: 17, fontWeight: '600', color: colors.textPrimary, marginBottom: spacing.sm, textAlign: 'center' },
   subtitle: { fontSize: 13, color: colors.textSecondary, textAlign: 'center', marginBottom: spacing.lg, lineHeight: 19 },
-  inviteButton: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    backgroundColor: colors.accent, borderRadius: radii.pill,
-    paddingVertical: spacing.md, paddingHorizontal: spacing.xl, width: '100%'
-  },
-  inviteButtonText: { color: colors.textOnAccent, fontWeight: '600', fontSize: 15 }
 });

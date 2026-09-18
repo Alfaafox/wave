@@ -3,6 +3,7 @@ import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, ActivityInd
 import { Ionicons } from '@expo/vector-icons';
 import SettingsSubScreenLayout from '../components/SettingsSubScreenLayout';
 import EditFieldScreen from '../components/EditFieldScreen';
+import ConfirmModal from '../components/ConfirmModal';
 import { isValidEmail } from '../components/AuthUI';
 import {
   updateProfile, updateUsername, checkUsername, changePassword, deactivateAccount, deleteAccount,
@@ -51,7 +52,7 @@ function ChangePasswordScreen({ token, onBack }) {
   };
 
   return (
-    <SettingsSubScreenLayout title="Change Password" onBack={onBack}>
+    <SettingsSubScreenLayout title="Change Password" onBack={onBack} backgroundColor={colors.screenBackground}>
       <View style={styles.card}>
         <Text style={styles.fieldLabel}>Current password</Text>
         <TextInput
@@ -209,7 +210,7 @@ function ChangeContactFlow({ kind, token, onUserUpdated, onBack }) {
 
   if (step === 'identity') {
     return (
-      <SettingsSubScreenLayout title={title} onBack={onBack}>
+      <SettingsSubScreenLayout title={title} onBack={onBack} backgroundColor={colors.screenBackground}>
         {busy && !identityInfo && <ActivityIndicator color={colors.accent} style={{ marginTop: spacing.xxl }} />}
         {identityInfo && (
           <>
@@ -235,7 +236,7 @@ function ChangeContactFlow({ kind, token, onUserUpdated, onBack }) {
 
   if (step === 'newValue') {
     return (
-      <SettingsSubScreenLayout title={title} onBack={onBack}>
+      <SettingsSubScreenLayout title={title} onBack={onBack} backgroundColor={colors.screenBackground}>
         <View style={styles.card}>
           <Text style={styles.fieldLabel}>{isEmail ? 'New email address' : 'New phone number'}</Text>
           {isEmail ? (
@@ -278,7 +279,7 @@ function ChangeContactFlow({ kind, token, onUserUpdated, onBack }) {
 
   // step === 'newOtp'
   return (
-    <SettingsSubScreenLayout title={title} onBack={onBack}>
+    <SettingsSubScreenLayout title={title} onBack={onBack} backgroundColor={colors.screenBackground}>
       {newInfo?.smsNotWired && (
         <Text style={styles.flowNote}>
           SMS is not switched on yet - for now the code is printed in the server logs.
@@ -312,8 +313,10 @@ function Bullets({ lines }) {
 // the server, so we log out on this device (onDone === App's handleLogout).
 function DeactivateAccountScreen({ token, onDone, onBack }) {
   const [working, setWorking] = useState(false);
+  const [modalVisible, setModalVisible] = useState(false);
 
   const runDeactivate = async () => {
+    setModalVisible(false);
     setWorking(true);
     try {
       await deactivateAccount(token);
@@ -328,19 +331,8 @@ function DeactivateAccountScreen({ token, onDone, onBack }) {
     }
   };
 
-  const confirm = () => {
-    Alert.alert(
-      'Deactivate account?',
-      'You can reactivate by logging in again.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Deactivate', style: 'destructive', onPress: runDeactivate },
-      ]
-    );
-  };
-
   return (
-    <SettingsSubScreenLayout title="Deactivate Account" onBack={onBack}>
+    <SettingsSubScreenLayout title="Deactivate Account" onBack={onBack} backgroundColor={colors.screenBackground}>
       <View style={styles.dangerCard}>
         <Text style={styles.dangerTitle}>While deactivated</Text>
         <Bullets lines={[
@@ -352,9 +344,19 @@ function DeactivateAccountScreen({ token, onDone, onBack }) {
         ]} />
       </View>
 
-      <TouchableOpacity style={styles.dangerButton} onPress={confirm} disabled={working} activeOpacity={0.85}>
+      <TouchableOpacity style={styles.dangerButton} onPress={() => setModalVisible(true)} disabled={working} activeOpacity={0.85}>
         {working ? <ActivityIndicator color={colors.textOnAccent} /> : <Text style={styles.dangerButtonText}>Deactivate Account</Text>}
       </TouchableOpacity>
+
+      <ConfirmModal
+        visible={modalVisible}
+        variant="destructive"
+        title="Deactivate account?"
+        body="You can reactivate by logging in again."
+        confirmLabel="Deactivate"
+        onConfirm={runDeactivate}
+        onCancel={() => setModalVisible(false)}
+      />
     </SettingsSubScreenLayout>
   );
 }
@@ -364,10 +366,12 @@ function DeactivateAccountScreen({ token, onDone, onBack }) {
 function DeleteAccountScreen({ token, onDone, onBack }) {
   const [confirmText, setConfirmText] = useState('');
   const [working, setWorking] = useState(false);
+  const [modalVisible, setModalVisible] = useState(false);
   const canDelete = confirmText === 'DELETE';
 
   const runDelete = async () => {
-    if (!canDelete || working) return;
+    setModalVisible(false);
+    if (working) return;
     setWorking(true);
     try {
       await deleteAccount(token);
@@ -383,7 +387,7 @@ function DeleteAccountScreen({ token, onDone, onBack }) {
   };
 
   return (
-    <SettingsSubScreenLayout title="Delete Account" onBack={onBack}>
+    <SettingsSubScreenLayout title="Delete Account" onBack={onBack} backgroundColor={colors.screenBackground}>
       <View style={styles.dangerCard}>
         <Text style={styles.dangerTitle}>This permanently</Text>
         <Bullets lines={[
@@ -409,12 +413,22 @@ function DeleteAccountScreen({ token, onDone, onBack }) {
       />
       <TouchableOpacity
         style={[styles.dangerButton, !canDelete && styles.dangerButtonDisabled]}
-        onPress={runDelete}
+        onPress={() => setModalVisible(true)}
         disabled={!canDelete || working}
         activeOpacity={0.85}
       >
         {working ? <ActivityIndicator color={colors.textOnAccent} /> : <Text style={styles.dangerButtonText}>Delete Account</Text>}
       </TouchableOpacity>
+
+      <ConfirmModal
+        visible={modalVisible}
+        variant="destructive"
+        title="Delete account"
+        body="Your account, messages, and all data will be permanently deleted. This cannot be undone."
+        confirmLabel="Delete my account"
+        onConfirm={runDelete}
+        onCancel={() => setModalVisible(false)}
+      />
     </SettingsSubScreenLayout>
   );
 }
@@ -507,7 +521,7 @@ export default function AccountSettingsScreen({ token, currentUser, onBack, onUs
 
   // Default: the Account list
   return (
-    <SettingsSubScreenLayout title="Account" onBack={onBack}>
+    <SettingsSubScreenLayout title="Account" onBack={onBack} backgroundColor={colors.screenBackground}>
       <View style={styles.rowsCard}>
         <TouchableOpacity style={styles.row} onPress={() => setSubScreen('name')} activeOpacity={0.6}>
           <Text style={styles.rowLabel}>Name</Text>

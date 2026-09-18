@@ -15,6 +15,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { VideoView, useVideoPlayer } from 'expo-video';
 import { viewStatus, deleteStatus } from '../utils/api';
+import ConfirmModal from '../components/ConfirmModal';
 import { colors, spacing, radii } from '../theme';
 
 const TOP_INSET = Platform.OS === 'android' ? (StatusBar.currentHeight || 24) + 10 : 54;
@@ -70,6 +71,9 @@ export default function StatusViewerScreen({ statusGroup, currentUser, token, on
   const [replyText, setReplyText] = useState('');
   const [viewersSheetOpen, setViewersSheetOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [modal, setModal] = useState({ visible: false });
+  const showModal = (config) => setModal({ visible: true, ...config });
+  const hideModal = () => setModal({ visible: false });
 
   // Sticker overlay coordinate space (Session 23) - the same normalized 0-1
   // x/y StatusCreatorScreen's canvas uses, so a sticker's saved position
@@ -168,33 +172,29 @@ export default function StatusViewerScreen({ statusGroup, currentUser, token, on
   };
 
   const handleDelete = () => {
-    Alert.alert(
-      'Delete this update?',
-      'This will remove it for everyone.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete', style: 'destructive',
-          onPress: async () => {
-            if (!current) return;
-            setDeleting(true);
-            try {
-              await deleteStatus(token, current.id);
-              if (statuses.length <= 1) { onClose(); return; }
-              // Remove locally and keep viewing the rest of the group.
-              const next = statuses.filter((_, i) => i !== activeIndex);
-              const nextIndex = Math.min(activeIndex, next.length - 1);
-              setStatuses(next);
-              goToIndex(nextIndex);
-            } catch (err) {
-              Alert.alert('Could not delete', err.message || 'Try again.');
-            } finally {
-              setDeleting(false);
-            }
-          }
+    showModal({
+      variant: 'destructive',
+      title: 'Delete status',
+      body: 'This status update will be permanently deleted.',
+      confirmLabel: 'Delete',
+      onConfirm: async () => {
+        if (!current) return;
+        setDeleting(true);
+        try {
+          await deleteStatus(token, current.id);
+          if (statuses.length <= 1) { onClose(); return; }
+          // Remove locally and keep viewing the rest of the group.
+          const next = statuses.filter((_, i) => i !== activeIndex);
+          const nextIndex = Math.min(activeIndex, next.length - 1);
+          setStatuses(next);
+          goToIndex(nextIndex);
+        } catch (err) {
+          Alert.alert('Could not delete', err.message || 'Try again.');
+        } finally {
+          setDeleting(false);
         }
-      ]
-    );
+      },
+    });
   };
 
   if (!current) return null;
@@ -398,6 +398,17 @@ export default function StatusViewerScreen({ statusGroup, currentUser, token, on
           </View>
         </TouchableOpacity>
       </Modal>
+
+      <ConfirmModal
+        visible={modal.visible}
+        variant={modal.variant}
+        title={modal.title}
+        body={modal.body}
+        confirmLabel={modal.confirmLabel}
+        cancelLabel={modal.cancelLabel}
+        onConfirm={() => { hideModal(); modal.onConfirm?.(); }}
+        onCancel={hideModal}
+      />
     </View>
   );
 }

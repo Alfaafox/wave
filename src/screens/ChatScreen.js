@@ -1,8 +1,9 @@
 import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import {
-  View, Text, FlatList, TextInput, TouchableOpacity, StyleSheet,
+  View, Text, FlatList, TextInput, TouchableOpacity, Pressable, StyleSheet,
   KeyboardAvoidingView, Platform, Image, Alert, ActivityIndicator,
-  Modal, Clipboard, Animated, Keyboard, PanResponder, Share, Linking, ScrollView
+  Modal, Clipboard, Animated, Keyboard, PanResponder, Share, Linking, ScrollView,
+  BackHandler
 } from 'react-native';
 import Reanimated, { useSharedValue, useAnimatedStyle, withSpring } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -36,6 +37,7 @@ import ImageViewerModal from '../components/ImageViewerModal';
 import ViewOnceViewer from '../components/ViewOnceViewer';
 import UserProfileModal from '../components/UserProfileModal';
 import PinnedMessagesModal from '../components/PinnedMessagesModal';
+import ConfirmModal from '../components/ConfirmModal';
 import ContactNotificationSettings from './ContactNotificationSettings';
 import SharedMediaScreen from './SharedMediaScreen';
 import TypingIndicator from '../components/TypingIndicator';
@@ -58,6 +60,20 @@ const VIEW_ONCE_PILLS = [
   { value: 3, label: '3' },
   { value: 5, label: '5' },
   { value: 10, label: '10' },
+];
+
+// Quick-reaction bar emoji, left to right: thumbs up, heart, joy, open-mouth,
+// loudly crying, folded hands, fire. Written as Unicode escapes, never raw
+// glyphs, per the project's mojibake rule (raw emoji in source risks corruption on Windows/
+// PowerShell - see CLAUDE.md).
+const QUICK_REACTIONS = [
+  '\uD83D\uDC4D', // thumbs up
+  '\u2764\uFE0F', // heart
+  '\uD83D\uDE02', // face with tears of joy
+  '\uD83D\uDE2E', // open-mouth face
+  '\uD83D\uDE2D', // loudly crying face
+  '\uD83D\uDE4F', // folded hands
+  '\uD83D\uDD25', // fire
 ];
 
 // Swipe-to-reply tuning.
@@ -630,8 +646,24 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
   liveShareRef.current = liveShare;
   const [replyTo, setReplyTo] = useState(null);
   const [editingMessage, setEditingMessage] = useState(null);
-  const [actionMenuFor, setActionMenuFor] = useState(null);
+  // Long-press interaction system (WhatsApp/Telegram/Signal-style): a
+  // long-press starts selection mode (selectedMessages gets that one id) AND
+  // floats the quick-reaction bar over that same message (reactionBarFor).
+  // The two are independent after that - dismissing the reaction bar (tap
+  // its backdrop) does NOT exit selection mode; only exitSelectionMode does.
+  const [selectedMessages, setSelectedMessages] = useState(new Set());
+  const [reactionBarFor, setReactionBarFor] = useState(null);
+  const inSelectionMode = selectedMessages.size > 0;
+  // CAB overflow menu ("...", single-selection only) - Copy / Pin / Edit /
+  // Delete for everyone, the four actions that lost their entry point when
+  // the old long-press action sheet was replaced.
+  const [showOverflow, setShowOverflow] = useState(false);
   const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
+  // Shared confirm/warning/destructive modal (replaces Alert.alert for
+  // confirmation dialogs in this screen) - one object, not one useState per dialog.
+  const [modal, setModal] = useState({ visible: false });
+  const showModal = (config) => setModal({ visible: true, ...config });
+  const hideModal = () => setModal({ visible: false });
   // Group management (Session 21). Fetched once via getGroupInfo on mount
   // for groups only - just enough to gate the "Only Admins Can Send
   // Messages" input lock and drive @mention suggestions, NOT a substitute
@@ -783,6 +815,10 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
   const replyBarAnim = useRef(new Animated.Value(0)).current;
   // @mention suggestion list slide-up, same 0/1 convention.
   const mentionAnim = useRef(new Animated.Value(0)).current;
+  // Quick-reaction bar: one press-scale Animated.Value per button (7 emoji +
+  // the "+" button = 8), so each button's 1.0 -> 1.3 -> 1.0 bounce is
+  // independent of the others.
+  const reactionScaleRefs = useRef([...Array(8)].map(() => new Animated.Value(1))).current;
 
   const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const recorderState = useAudioRecorderState(audioRecorder);
@@ -858,6 +894,22 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
   }, [isGroup, conversationId, token]);
 
   useEffect(() => () => clearInterval(slowModeTimerRef.current), []);
+
+  // Android hardware back: while in selection mode, back exits selection
+  // instead of navigating away from the chat. Otherwise, fall through to
+  // whatever default behaviour already exists (returning false lets the
+  // event propagate).
+  useEffect(() => {
+    const onBackPress = () => {
+      if (inSelectionMode) {
+        exitSelectionMode();
+        return true;
+      }
+      return false;
+    };
+    const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+    return () => subscription.remove();
+  }, [inSelectionMode]);
 
   useEffect(() => {
     if (replyTo) {
@@ -1877,12 +1929,146 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     } catch (e) {}
   };
 
-  const openActionMenu = (message) => {
+  // Long-press: start selection mode on this one message AND float the
+  // quick-reaction bar over it, simultaneously.
+  const handleMessageLongPress = (message) => {
     if (message.deleted_for_everyone) return;
-    setActionMenuFor(message);
+    setReactionBarFor(message);
+    setSelectedMessages(new Set([message.id]));
   };
 
-  const closeActionMenu = () => setActionMenuFor(null);
+  // Tap on a bubble while selection mode is already active: toggle that
+  // message in/out of the selection instead of the bubble's normal tap
+  // behaviour (image viewer, live-location open, etc - see the renderItem
+  // wiring below, which only calls this when inSelectionMode is true).
+  const handleMessageTap = (message) => {
+    if (!inSelectionMode) return;
+    setSelectedMessages((prev) => {
+      const next = new Set(prev);
+      if (next.has(message.id)) {
+        next.delete(message.id);
+      } else {
+        next.add(message.id);
+      }
+      if (next.size === 0) setReactionBarFor(null);
+      return next;
+    });
+  };
+
+  const exitSelectionMode = () => {
+    setSelectedMessages(new Set());
+    setReactionBarFor(null);
+  };
+
+  // React to a message from the floating quick-reaction bar. Reuses the
+  // existing toggleReaction socket call (handleToggleReaction below, already
+  // wired to ReactionPicker) - does NOT exit selection mode, the user may
+  // still want to act on the message afterwards (reply/forward/delete).
+  const handleQuickReaction = (emoji) => {
+    if (!reactionBarFor) return;
+    handleToggleReaction(reactionBarFor.id, emoji);
+    setReactionBarFor(null);
+  };
+
+  // 1.0 -> 1.3 -> 1.0 bounce for whichever reaction-bar button was pressed.
+  // Animated.spring has no literal "duration" param (it's physics-driven,
+  // not time-driven) - this speed/bounciness pairing is tuned to land close
+  // to the requested ~150ms round trip.
+  const bounceReactionButton = (index) => {
+    const val = reactionScaleRefs[index];
+    Animated.sequence([
+      Animated.spring(val, { toValue: 1.3, useNativeDriver: true, speed: 40, bounciness: 0 }),
+      Animated.spring(val, { toValue: 1, useNativeDriver: true, speed: 40, bounciness: 0 }),
+    ]).start();
+  };
+
+  // CAB "Delete" (works for 1 or many). Reuses doDeleteForMe - the same
+  // per-message socket emit promptDeleteForMe already called on confirm -
+  // once per selected id, inside the shared ConfirmModal's onConfirm.
+  const handleDeleteSelected = () => {
+    const count = selectedMessages.size;
+    const ids = [...selectedMessages];
+    showModal({
+      variant: 'destructive',
+      title: count === 1 ? 'Delete message' : `Delete ${count} messages`,
+      body: count === 1
+        ? 'This message will be deleted for you only.'
+        : `These ${count} messages will be deleted for you only.`,
+      confirmLabel: count === 1 ? 'Delete for me' : `Delete ${count} messages`,
+      onConfirm: () => {
+        ids.forEach((id) => {
+          const msg = messages.find((m) => m.id === id);
+          if (msg) doDeleteForMe(msg);
+        });
+        exitSelectionMode();
+      },
+    });
+  };
+
+  // CAB "Forward". The existing forward flow (handleForward) only supports
+  // one message at a time (it opens a single forwardPickerFor) - multi-select
+  // forward-to-many would need a different picker UI, out of scope here, so
+  // this forwards just the first selected message, matching the task's
+  // explicit fallback instruction.
+  const handleForwardSelected = () => {
+    const firstId = [...selectedMessages][0];
+    const message = messages.find((m) => m.id === firstId);
+    if (message) handleForward(message);
+    exitSelectionMode();
+  };
+
+  // CAB "Star" - only ever shown/callable with exactly 1 selected (see the
+  // CAB JSX below).
+  const handleStarSelected = () => {
+    if (selectedMessages.size !== 1) return;
+    const id = [...selectedMessages][0];
+    const message = messages.find((m) => m.id === id);
+    if (message) handleToggleStar(message);
+    exitSelectionMode();
+  };
+
+  // CAB "Reply" - only ever shown/callable with exactly 1 selected.
+  const handleReplySelected = () => {
+    if (selectedMessages.size !== 1) return;
+    const id = [...selectedMessages][0];
+    const message = messages.find((m) => m.id === id);
+    if (message) handleReply(message);
+    exitSelectionMode();
+  };
+
+  // CAB overflow menu ("...") - Copy / Pin / Edit / Delete for everyone,
+  // single-selection only (see the ellipsis button's own size===1 gate).
+  const handleCopySelected = () => {
+    const id = [...selectedMessages][0];
+    const message = messages.find((m) => m.id === id);
+    setShowOverflow(false);
+    if (message) handleCopy(message);
+    exitSelectionMode();
+  };
+
+  const handlePinSelected = () => {
+    const id = [...selectedMessages][0];
+    const message = messages.find((m) => m.id === id);
+    setShowOverflow(false);
+    if (message) handleTogglePin(message);
+    exitSelectionMode();
+  };
+
+  const handleEditSelected = () => {
+    const id = [...selectedMessages][0];
+    const message = messages.find((m) => m.id === id);
+    setShowOverflow(false);
+    if (message) handleEdit(message);
+    exitSelectionMode();
+  };
+
+  const handleDeleteForEveryoneSelected = () => {
+    const id = [...selectedMessages][0];
+    const message = messages.find((m) => m.id === id);
+    setShowOverflow(false);
+    if (message) promptDeleteForEveryone(message);
+    exitSelectionMode();
+  };
 
   // Export the whole loaded conversation as plain text via the OS share sheet.
   // System messages, deleted messages and raw media payloads are left out -
@@ -1948,16 +2134,14 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     );
   };
 
-  const handleReply = () => {
-    setReplyTo(actionMenuFor);
-    closeActionMenu();
+  const handleReply = (msg) => {
+    setReplyTo(msg);
   };
 
-  const handleCopy = () => {
-    if (actionMenuFor?.message_type === 'text') {
-      Clipboard.setString(actionMenuFor.content);
+  const handleCopy = (msg) => {
+    if (msg?.message_type === 'text') {
+      Clipboard.setString(msg.content);
     }
-    closeActionMenu();
   };
 
   // messages.starred_by is a JSON array string of user ids (or null). A message
@@ -1973,9 +2157,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
   };
   const isMessageStarred = (item) => parseStarredBy(item?.starred_by).includes(currentUser.id);
 
-  const handleToggleStar = () => {
-    const msg = actionMenuFor;
-    closeActionMenu();
+  const handleToggleStar = (msg) => {
     if (!msg) return;
     const currentlyStarred = isMessageStarred(msg);
     const prevStarredBy = msg.starred_by ?? null;
@@ -1997,9 +2179,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
 
   const isMessagePinned = (item) => pinnedMessages.some((p) => p.message_id === item?.id);
 
-  const handleTogglePin = () => {
-    const msg = actionMenuFor;
-    closeActionMenu();
+  const handleTogglePin = (msg) => {
     if (!msg) return;
     const currentlyPinned = isMessagePinned(msg);
 
@@ -2067,22 +2247,22 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     if (pinnedModalOpen && pinnedMessages.length < 2) setPinnedModalOpen(false);
   }, [pinnedModalOpen, pinnedMessages.length]);
 
-  const handleEdit = () => {
-    const msg = actionMenuFor;
+  const handleEdit = (msg) => {
     const age = Date.now() - new Date(msg.created_at.replace(' ', 'T') + (msg.created_at.includes('Z') ? '' : 'Z')).getTime();
     if (age > EDIT_DELETE_WINDOW_MS) {
       Alert.alert('Too late', 'You can only edit messages within 15 minutes of sending.');
-      closeActionMenu();
       return;
     }
     setEditingMessage(msg);
     setInput(msg.content);
-    closeActionMenu();
   };
 
-  const handleDeleteForMe = () => {
-    const msg = actionMenuFor;
-    closeActionMenu();
+  // NOTE: no longer called anywhere (dead code already, before this pass -
+  // the old action sheet called promptDeleteForMe/promptDeleteForEveryone
+  // below, not these two). Left in place per "keep untouched", just
+  // parameterized so a stray reference to the now-removed actionMenuFor
+  // doesn't throw if either is ever wired up again.
+  const handleDeleteForMe = (msg) => {
     socketRef.current?.emit('deleteForMe', { messageId: msg.id }, (response) => {
       if (response?.ok) {
         setMessages((prev) => prev.filter((m) => m.id !== msg.id));
@@ -2092,9 +2272,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     });
   };
 
-  const handleDeleteForEveryone = () => {
-    const msg = actionMenuFor;
-    closeActionMenu();
+  const handleDeleteForEveryone = (msg) => {
     socketRef.current?.emit('deleteForEveryone', { messageId: msg.id }, (response) => {
       if (!response?.ok) {
         Alert.alert('Could not delete for everyone', response?.error || 'Try again.');
@@ -2102,20 +2280,34 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     });
   };
 
-  const confirmDelete = () => {
-    const msg = actionMenuFor;
+  const canDeleteForEveryone = (msg) => {
+    if (!msg) return false;
     const isMine = msg.user_id === currentUser.id;
     const age = Date.now() - new Date(msg.created_at.replace(' ', 'T') + (msg.created_at.includes('Z') ? '' : 'Z')).getTime();
-    const canDeleteForEveryone = isMine && age <= EDIT_DELETE_WINDOW_MS;
+    return isMine && age <= EDIT_DELETE_WINDOW_MS;
+  };
 
-    closeActionMenu();
-    const options = [{ text: 'Cancel', style: 'cancel' }];
-    if (canDeleteForEveryone) {
-      options.push({ text: 'Delete for everyone', style: 'destructive', onPress: () => doDeleteForEveryone(msg) });
-    }
-    options.push({ text: 'Delete for me', style: 'destructive', onPress: () => doDeleteForMe(msg) });
+  // NOTE: no longer called anywhere either (see handleDeleteSelected above,
+  // which calls doDeleteForMe directly per selected id instead) - kept
+  // untouched otherwise, parameterized for the same reason as above.
+  const promptDeleteForMe = (msg) => {
+    showModal({
+      variant: 'destructive',
+      title: 'Delete message',
+      body: 'This message will be deleted for you only.',
+      confirmLabel: 'Delete for me',
+      onConfirm: () => doDeleteForMe(msg),
+    });
+  };
 
-    Alert.alert('Delete message?', '', options);
+  const promptDeleteForEveryone = (msg) => {
+    showModal({
+      variant: 'destructive',
+      title: 'Delete for everyone',
+      body: 'This message will be deleted for all participants.',
+      confirmLabel: 'Delete for everyone',
+      onConfirm: () => doDeleteForEveryone(msg),
+    });
   };
 
   const doDeleteForMe = (msg) => {
@@ -2136,9 +2328,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     });
   };
 
-  const handleForward = async () => {
-    const msg = actionMenuFor;
-    closeActionMenu();
+  const handleForward = async (msg) => {
     // File messages carry a server-side file_id, not raw content - the
     // socket 'message' path forwarding below re-sends `content` as a plain
     // string, which would silently downgrade a forwarded file into a text
@@ -2197,9 +2387,13 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     });
   };
 
+  // Opens the full emoji grid (ReactionPicker, untouched) for whichever
+  // message the quick-reaction bar is currently floating over - the "+"
+  // button on that bar. actionMenuFor no longer exists; reactionBarFor is
+  // its direct replacement for "the message this transient overlay concerns".
   const openReactionPicker = () => {
-    setReactionPickerFor(actionMenuFor);
-    closeActionMenu();
+    setReactionPickerFor(reactionBarFor);
+    setReactionBarFor(null);
   };
 
   const submitEdit = () => {
@@ -2221,6 +2415,12 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
     setEditingMessage(null);
     setInput('');
   };
+
+  // The single selected message, when exactly one is selected - drives the
+  // CAB overflow menu's Pin/Edit/Delete-for-everyone visibility and labels.
+  const selectedSingleMessage = selectedMessages.size === 1
+    ? messages.find((m) => m.id === [...selectedMessages][0]) || null
+    : null;
 
   const headerTitle = isGroup ? (groupNameOverride || groupName || 'Group') : (otherUser?.name || 'Chat');
   // Header avatar: the other party's picture for 1:1, else initials (first
@@ -2439,7 +2639,37 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
         style={styles.header}
         onLayout={(e) => setHeaderHeight(e.nativeEvent.layout.height)}
       >
-        {searchMode ? (
+        {inSelectionMode ? (
+          <>
+            {/* No close/"x" button by design - matches WhatsApp, which relies
+                on the Android hardware back button to exit selection mode
+                (already wired up via the BackHandler effect above). */}
+            <Text style={styles.cabTitle} numberOfLines={1}>{selectedMessages.size}</Text>
+            <View style={styles.cabActions}>
+              {selectedMessages.size === 1 && (
+                <Pressable onPress={handleReplySelected} style={styles.cabIconBtn} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                  <Ionicons name="arrow-undo-outline" size={24} color={colors.text} />
+                </Pressable>
+              )}
+              <Pressable onPress={handleForwardSelected} style={styles.cabIconBtn} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                <Ionicons name="arrow-redo-outline" size={24} color={colors.text} />
+              </Pressable>
+              {selectedMessages.size === 1 && (
+                <Pressable onPress={handleStarSelected} style={styles.cabIconBtn} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                  <Ionicons name="star-outline" size={24} color={colors.text} />
+                </Pressable>
+              )}
+              <Pressable onPress={handleDeleteSelected} style={styles.cabIconBtn} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                <Ionicons name="trash-outline" size={24} color={colors.destructive} />
+              </Pressable>
+              {selectedMessages.size === 1 && (
+                <Pressable onPress={() => setShowOverflow(true)} style={styles.cabIconBtn} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                  <Ionicons name="ellipsis-vertical" size={22} color={colors.text} />
+                </Pressable>
+              )}
+            </View>
+          </>
+        ) : searchMode ? (
           <>
             <TouchableOpacity onPress={exitSearchMode} style={styles.backBtn}>
               <Ionicons name="arrow-back" size={24} color={colors.textPrimary} />
@@ -2530,24 +2760,20 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
                 style={styles.headerMenuItem}
                 onPress={() => {
                   setHeaderMenuOpen(false);
-                  Alert.alert(
-                    `Block ${otherUser?.name || 'this user'}?`,
-                    'They will not be able to send you messages or calls.',
-                    [
-                      { text: 'Cancel', style: 'cancel' },
-                      {
-                        text: 'Block', style: 'destructive',
-                        onPress: async () => {
-                          try {
-                            await blockUser(token, otherUser.id);
-                            Alert.alert('Blocked', `${otherUser?.name || 'User'} has been blocked.`);
-                          } catch (err) {
-                            Alert.alert('Error', err.message || 'Could not block user.');
-                          }
-                        }
+                  showModal({
+                    variant: 'destructive',
+                    title: `Block ${otherUser?.name || 'this user'}`,
+                    body: 'Blocked users cannot send you messages or call you.',
+                    confirmLabel: 'Block',
+                    onConfirm: async () => {
+                      try {
+                        await blockUser(token, otherUser.id);
+                        Alert.alert('Blocked', `${otherUser?.name || 'User'} has been blocked.`);
+                      } catch (err) {
+                        Alert.alert('Error', err.message || 'Could not block user.');
                       }
-                    ]
-                  );
+                    },
+                  });
                 }}
               >
                 <Ionicons name="ban-outline" size={18} color={colors.danger || '#ff4444'} />
@@ -2679,8 +2905,29 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
 
           const isMine = item.user_id === currentUser.id;
 
+          // Selection-row wrapper (checkmark column + tinted background) -
+          // shared by every real message row (this file, the view-once cards
+          // below, and the main bubble further down) so the layout doesn't
+          // jump depending on message type when selection mode toggles.
+          // Neither of these two card types can be long-pressed into
+          // selection (deleted messages have nothing to act on; view-once is
+          // a deliberate one-shot view) - they can only ever show as
+          // unselected while some OTHER message drives selection mode.
+          const withSelectionRow = (content) => (
+            <View style={[styles.selectionRow, selectedMessages.has(item.id) && styles.selectionRowActive]}>
+              {inSelectionMode ? (
+                <View style={[styles.selectionCheck, selectedMessages.has(item.id) && styles.selectionCheckActive]}>
+                  {selectedMessages.has(item.id) && <Ionicons name="checkmark" size={14} color="#FFFFFF" />}
+                </View>
+              ) : (
+                <View style={styles.selectionCheckSpacer} />
+              )}
+              <View style={{ flex: 1 }}>{content}</View>
+            </View>
+          );
+
           if (item.deleted_for_everyone) {
-            return (
+            return withSelectionRow(
               <View style={[styles.bubble, isMine ? styles.bubbleMine : styles.bubbleTheirs]}>
                 <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                   <Ionicons name="ban-outline" size={14} color={colors.textMuted} style={{ marginRight: 6 }} />
@@ -2697,7 +2944,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
             const mediaLabel = item.message_type === 'video' ? 'Video' : 'Photo';
             const viewed = item.view_once_viewed === 1;
             if (isMine || viewed) {
-              return (
+              return withSelectionRow(
                 <View style={[styles.voCard, isMine ? styles.voCardMine : styles.voCardTheirs, styles.voCardSpent]}>
                   <Ionicons name="eye-off-outline" size={16} color={colors.textSecondary} style={styles.voCardIcon} />
                   <Text style={styles.voCardSpentText}>
@@ -2706,7 +2953,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
                 </View>
               );
             }
-            return (
+            return withSelectionRow(
               <TouchableOpacity
                 style={[styles.voCard, styles.voCardTheirs, styles.voCardOpen]}
                 activeOpacity={0.8}
@@ -2744,7 +2991,10 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
           const bubble = (
             <TouchableOpacity
               activeOpacity={0.85}
-              onLongPress={() => openActionMenu(item)}
+              onLongPress={() => handleMessageLongPress(item)}
+              onPress={() => {
+                if (inSelectionMode) { handleMessageTap(item); return; }
+              }}
               style={[styles.bubble, isMine ? styles.bubbleMine : styles.bubbleTheirs]}
             >
               {isMessageStarred(item) && (
@@ -2793,7 +3043,13 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
               )}
 
               {item.message_type === 'image' && (
-                <TouchableOpacity onPress={() => setViewerImage(item.content)} onLongPress={() => openActionMenu(item)}>
+                <TouchableOpacity
+                  onPress={() => {
+                    if (inSelectionMode) { handleMessageTap(item); return; }
+                    setViewerImage(item.content);
+                  }}
+                  onLongPress={() => handleMessageLongPress(item)}
+                >
                   <Image source={{ uri: item.content }} style={styles.messageImage} resizeMode="cover" />
                 </TouchableOpacity>
               )}
@@ -2912,12 +3168,13 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
             </Animated.View>
           ) : bubble;
 
-          // Swipe-right-to-reply. Disabled in search mode, for deleted-for-
-          // everyone / system messages (both already return above), and when
-          // the other account is gone (no input bar to send a reply from).
-          return (
+          // Swipe-right-to-reply. Disabled in search mode, selection mode, for
+          // deleted-for-everyone / system messages (both already return
+          // above), and when the other account is gone (no input bar to send
+          // a reply from).
+          return withSelectionRow(
             <SwipeableMessage
-              enabled={!searchMode && !accountUnavailable}
+              enabled={!searchMode && !accountUnavailable && !inSelectionMode}
               onTriggerReply={() => handleSwipeReply(item)}
             >
               {withHighlight}
@@ -3612,64 +3869,87 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
         </View>
       )}
 
-      <Modal visible={!!actionMenuFor} transparent animationType="fade" onRequestClose={closeActionMenu}>
-        <TouchableOpacity style={styles.actionOverlay} activeOpacity={1} onPress={closeActionMenu}>
-          <View style={styles.actionMenu}>
-            {!accountUnavailable && (
-              <TouchableOpacity style={styles.actionItem} onPress={handleReply}>
-                <Text style={styles.actionText}>Reply</Text>
+      {/* Floating quick-reaction bar. Independent of selection mode - its
+          backdrop only hides the bar (setReactionBarFor(null)); it never
+          calls exitSelectionMode, so the CAB stays up underneath it. No
+          layout measurement of the target bubble (see the file-header note
+          on this): centered horizontally, offset up from true vertical
+          center so it reads as "above the message" without needing onLayout. */}
+      <Modal visible={!!reactionBarFor} transparent animationType="fade" onRequestClose={() => setReactionBarFor(null)}>
+        <TouchableOpacity
+          style={styles.reactionBarBackdrop}
+          activeOpacity={1}
+          onPress={() => setReactionBarFor(null)}
+        >
+          <View style={styles.reactionBarPill}>
+            {QUICK_REACTIONS.map((emoji, index) => (
+              <TouchableOpacity
+                key={emoji}
+                style={styles.reactionBarButton}
+                activeOpacity={0.7}
+                onPress={() => {
+                  bounceReactionButton(index);
+                  handleQuickReaction(emoji);
+                }}
+              >
+                <Animated.View style={{ transform: [{ scale: reactionScaleRefs[index] }] }}>
+                  <Text style={styles.reactionBarEmoji}>{emoji}</Text>
+                </Animated.View>
               </TouchableOpacity>
-            )}
-            <TouchableOpacity style={styles.actionItem} onPress={openReactionPicker}>
-              <Text style={styles.actionText}>React</Text>
+            ))}
+            <TouchableOpacity
+              style={styles.reactionBarPlusButton}
+              activeOpacity={0.7}
+              onPress={() => {
+                bounceReactionButton(7);
+                openReactionPicker();
+              }}
+            >
+              {/* Ionicons deliberately NOT wrapped in the Animated.View here -
+                  known crash risk on New Architecture + Hermes when Ionicons
+                  sits inside an Animated.View. The emoji buttons above are
+                  safe to animate because they wrap plain Text, not Ionicons. */}
+              <Ionicons name="add-outline" size={20} color="#7A7A8A" />
             </TouchableOpacity>
-            {actionMenuFor && (
-              <TouchableOpacity style={styles.actionItem} onPress={handleToggleStar}>
-                <View style={styles.actionItemRow}>
-                  <Ionicons
-                    name={isMessageStarred(actionMenuFor) ? 'star' : 'star-outline'}
-                    size={17}
-                    color={isMessageStarred(actionMenuFor) ? '#FFD700' : colors.textPrimary}
-                    style={{ marginRight: 10 }}
-                  />
-                  <Text style={styles.actionText}>{isMessageStarred(actionMenuFor) ? 'Unstar' : 'Star'}</Text>
-                </View>
-              </TouchableOpacity>
-            )}
-            {actionMenuFor && (
-              <TouchableOpacity style={styles.actionItem} onPress={handleTogglePin}>
-                <View style={styles.actionItemRow}>
-                  <Ionicons
-                    name={isMessagePinned(actionMenuFor) ? 'pin' : 'pin-outline'}
-                    size={17}
-                    color={isMessagePinned(actionMenuFor) ? colors.accent : colors.textPrimary}
-                    style={{ marginRight: 10 }}
-                  />
-                  <Text style={styles.actionText}>{isMessagePinned(actionMenuFor) ? 'Unpin' : 'Pin'}</Text>
-                </View>
-              </TouchableOpacity>
-            )}
-            {actionMenuFor?.message_type === 'image' && (
-              <TouchableOpacity style={styles.actionItem} onPress={() => { const msg = actionMenuFor; closeActionMenu(); saveImage(msg.content); }}>
-                <Text style={styles.actionText}>Save to Gallery</Text>
-              </TouchableOpacity>
-            )}
-            {actionMenuFor?.message_type === 'text' && (
-              <TouchableOpacity style={styles.actionItem} onPress={handleCopy}>
-                <Text style={styles.actionText}>Copy</Text>
-              </TouchableOpacity>
-            )}
-            <TouchableOpacity style={styles.actionItem} onPress={handleForward}>
-              <Text style={styles.actionText}>Forward</Text>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* CAB overflow menu ("..."): Copy / Pin / Edit / Delete for everyone -
+          the four single-message actions the CAB's fixed icon row has no
+          room for. Backdrop only closes the menu (setShowOverflow(false)),
+          it never exits selection mode - same split as the reaction bar. */}
+      <Modal visible={showOverflow} transparent animationType="fade" onRequestClose={() => setShowOverflow(false)}>
+        <TouchableOpacity
+          style={styles.overflowBackdrop}
+          activeOpacity={1}
+          onPress={() => setShowOverflow(false)}
+        >
+          <View style={styles.overflowMenu}>
+            <TouchableOpacity style={styles.overflowItem} onPress={handleCopySelected}>
+              <Ionicons name="copy-outline" size={18} color={colors.text} />
+              <Text style={styles.overflowLabel}>Copy</Text>
             </TouchableOpacity>
-            {actionMenuFor?.user_id === currentUser.id && actionMenuFor?.message_type === 'text' && !accountUnavailable && (
-              <TouchableOpacity style={styles.actionItem} onPress={handleEdit}>
-                <Text style={styles.actionText}>Edit</Text>
+            <TouchableOpacity style={styles.overflowItem} onPress={handlePinSelected}>
+              <Ionicons
+                name={isMessagePinned(selectedSingleMessage) ? 'pin' : 'pin-outline'}
+                size={18}
+                color={colors.text}
+              />
+              <Text style={styles.overflowLabel}>{isMessagePinned(selectedSingleMessage) ? 'Unpin' : 'Pin'}</Text>
+            </TouchableOpacity>
+            {selectedSingleMessage?.user_id === currentUser.id && selectedSingleMessage?.message_type === 'text' && (
+              <TouchableOpacity style={styles.overflowItem} onPress={handleEditSelected}>
+                <Ionicons name="pencil-outline" size={18} color={colors.text} />
+                <Text style={styles.overflowLabel}>Edit</Text>
               </TouchableOpacity>
             )}
-            <TouchableOpacity style={styles.actionItem} onPress={confirmDelete}>
-              <Text style={[styles.actionText, { color: colors.danger }]}>Delete</Text>
-            </TouchableOpacity>
+            {canDeleteForEveryone(selectedSingleMessage) && (
+              <TouchableOpacity style={styles.overflowItem} onPress={handleDeleteForEveryoneSelected}>
+                <Ionicons name="trash-outline" size={18} color={colors.destructive} />
+                <Text style={[styles.overflowLabel, { color: colors.destructive }]}>Delete for everyone</Text>
+              </TouchableOpacity>
+            )}
           </View>
         </TouchableOpacity>
       </Modal>
@@ -3810,6 +4090,17 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
         onClose={() => setPinnedModalOpen(false)}
         onJumpTo={jumpToPinned}
         onUnpin={handleUnpinFromModal}
+      />
+
+      <ConfirmModal
+        visible={modal.visible}
+        variant={modal.variant}
+        title={modal.title}
+        body={modal.body}
+        confirmLabel={modal.confirmLabel}
+        cancelLabel={modal.cancelLabel}
+        onConfirm={() => { hideModal(); modal.onConfirm?.(); }}
+        onCancel={hideModal}
       />
     </KeyboardAvoidingView>
   );
@@ -4169,9 +4460,64 @@ const styles = StyleSheet.create({
   },
   unavailableText: { color: colors.textMuted, fontSize: 14 },
 
-  actionOverlay: { flex: 1, backgroundColor: colors.overlay, justifyContent: 'center', alignItems: 'center' },
-  actionMenu: { backgroundColor: colors.background, borderRadius: radii.md, width: 220, paddingVertical: spacing.sm, ...shadow.md },
-  actionItem: { paddingVertical: 14, paddingHorizontal: spacing.xl },
+  // Quick-reaction bar (floating pill, Modal-based - see the file-header
+  // note on why there's no real layout-measured positioning).
+  reactionBarBackdrop: { flex: 1 },
+  // Anchored near the bottom of the chat area (above the input bar) instead
+  // of screen-center - closer to the message just long-pressed and to the
+  // user's thumb. Still not a real per-message anchor (no layout
+  // measurement / gesture-handler in this codebase - see the file-header
+  // note above the Modal itself). `left`/`right` alone (no explicit width)
+  // is what actually fills the horizontal space between those two margins
+  // for an absolutely positioned view - adding a literal width:'100%' on
+  // top would override that and overflow past `right`, so it's intentionally
+  // left out despite the visual result being the same "fills the gap" look.
+  reactionBarPill: {
+    position: 'absolute', bottom: 200, left: 16, right: 16,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-evenly',
+    backgroundColor: '#FFFFFF', borderRadius: 999,
+    paddingHorizontal: 8, paddingVertical: 8, gap: 4,
+    elevation: 10, shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 12, shadowOffset: { width: 0, height: 4 },
+  },
+  reactionBarButton: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center', borderRadius: 22 },
+  reactionBarEmoji: { fontSize: 26 },
+  reactionBarPlusButton: {
+    width: 44, height: 44, borderRadius: 22, backgroundColor: '#F0F0F5',
+    alignItems: 'center', justifyContent: 'center',
+  },
+
+  // Contextual Action Bar (CAB) - replaces the normal header content while
+  // inSelectionMode is true. Reuses styles.header for size/background.
+  cabTitle: { flex: 1, fontSize: 18, fontWeight: '600', color: colors.text, paddingLeft: 16 },
+  cabActions: { flexDirection: 'row', alignItems: 'center', paddingRight: 8 },
+  cabIconBtn: { padding: 8, marginLeft: 8, minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
+
+  // CAB overflow menu popover.
+  overflowBackdrop: { flex: 1, backgroundColor: 'transparent' },
+  overflowMenu: {
+    position: 'absolute', top: 56, right: 8,
+    backgroundColor: '#FFFFFF', borderRadius: 12, elevation: 8,
+    paddingVertical: 4, minWidth: 180,
+    shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 12, shadowOffset: { width: 0, height: 4 },
+  },
+  overflowItem: {
+    height: 44, paddingHorizontal: 16,
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+  },
+  overflowLabel: { fontSize: 15, color: colors.text },
+
+  // Message-row selection UI (checkmark column + tinted background),
+  // rendered around every real message row - see withSelectionRow above.
+  selectionRow: { flexDirection: 'row', alignItems: 'center' },
+  selectionRowActive: { backgroundColor: 'rgba(44,107,237,0.08)' },
+  selectionCheckSpacer: { width: 0 },
+  selectionCheck: {
+    width: 22, height: 22, borderRadius: 11,
+    borderWidth: 1.5, borderColor: colors.toggleInactive, backgroundColor: 'transparent',
+    alignItems: 'center', justifyContent: 'center',
+    marginRight: 8,
+  },
+  selectionCheckActive: { backgroundColor: colors.accent, borderWidth: 0 },
 
   headerMenuOverlay: { flex: 1, backgroundColor: 'transparent' },
   headerMenuDropdown: {
@@ -4210,8 +4556,6 @@ const styles = StyleSheet.create({
   stopLiveShareRow: { alignItems: 'center', paddingTop: 6, paddingBottom: 2 },
   stopLiveShareText: { fontSize: 13, fontWeight: '600', textDecorationLine: 'underline' },
 
-  actionItemRow: { flexDirection: 'row', alignItems: 'center' },
-  actionText: { fontSize: 16, color: colors.textPrimary },
   modalOverlay: { flex: 1, backgroundColor: colors.overlay, justifyContent: 'flex-end' },
   forwardBox: { backgroundColor: colors.background, padding: spacing.lg, borderTopLeftRadius: radii.md, borderTopRightRadius: radii.md, maxHeight: '60%' },
   modalTitle: { fontSize: 18, fontWeight: '600', marginBottom: spacing.md, color: colors.textPrimary },

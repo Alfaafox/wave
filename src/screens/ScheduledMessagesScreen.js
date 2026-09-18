@@ -15,6 +15,8 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing } from '../theme';
 import { getScheduledMessages, cancelScheduledMessage } from '../utils/api';
+import ConfirmModal from '../components/ConfirmModal';
+import EmptyState from '../components/EmptyState';
 
 // SQLite returns UTC timestamps as "YYYY-MM-DD HH:MM:SS" - no 'T', no 'Z'.
 // new Date() on that raw string is unreliable (Hermes can mis-parse a
@@ -68,6 +70,9 @@ export default function ScheduledMessagesScreen({ token, onBack }) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(null);
+  const [modal, setModal] = useState({ visible: false });
+  const showModal = (config) => setModal({ visible: true, ...config });
+  const hideModal = () => setModal({ visible: false });
 
   const load = useCallback(async (isRefresh = false) => {
     try {
@@ -86,27 +91,23 @@ export default function ScheduledMessagesScreen({ token, onBack }) {
   useEffect(() => { load(); }, [load]);
 
   const handleCancel = (item) => {
-    Alert.alert(
-      'Cancel scheduled message?',
-      `This message to ${getConversationLabel(item)} will not be sent.`,
-      [
-        { text: 'Keep', style: 'cancel' },
-        {
-          text: 'Cancel message',
-          style: 'destructive',
-          onPress: async () => {
-            const prev = messages;
-            setMessages((cur) => cur.filter((m) => m.id !== item.id));
-            try {
-              await cancelScheduledMessage(token, item.id);
-            } catch (err) {
-              setMessages(prev);
-              Alert.alert('Could not cancel', err.message);
-            }
-          },
-        },
-      ]
-    );
+    showModal({
+      variant: 'destructive',
+      title: 'Cancel scheduled message',
+      body: 'This message will not be sent.',
+      confirmLabel: 'Cancel message',
+      cancelLabel: 'Keep it',
+      onConfirm: async () => {
+        const prev = messages;
+        setMessages((cur) => cur.filter((m) => m.id !== item.id));
+        try {
+          await cancelScheduledMessage(token, item.id);
+        } catch (err) {
+          setMessages(prev);
+          Alert.alert('Could not cancel', err.message);
+        }
+      },
+    });
   };
 
   const renderItem = ({ item }) => (
@@ -155,13 +156,11 @@ export default function ScheduledMessagesScreen({ token, onBack }) {
           </TouchableOpacity>
         </View>
       ) : messages.length === 0 ? (
-        <View style={styles.emptyWrap}>
-          <Ionicons name="time-outline" size={44} color={colors.textMuted} />
-          <Text style={styles.emptyTitle}>No scheduled messages</Text>
-          <Text style={styles.emptySub}>
-            Messages you schedule will appear here.
-          </Text>
-        </View>
+        <EmptyState
+          icon="clock"
+          title="No scheduled messages"
+          body="Long-press the send button in any chat to schedule a message"
+        />
       ) : (
         <FlatList
           data={messages}
@@ -173,6 +172,17 @@ export default function ScheduledMessagesScreen({ token, onBack }) {
           contentContainerStyle={{ paddingBottom: spacing.xl }}
         />
       )}
+
+      <ConfirmModal
+        visible={modal.visible}
+        variant={modal.variant}
+        title={modal.title}
+        body={modal.body}
+        confirmLabel={modal.confirmLabel}
+        cancelLabel={modal.cancelLabel}
+        onConfirm={() => { hideModal(); modal.onConfirm?.(); }}
+        onCancel={hideModal}
+      />
     </View>
   );
 }

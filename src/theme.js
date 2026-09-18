@@ -35,6 +35,31 @@ export const colors = {
   divider: '#EDEDED',
   overlay: 'rgba(0,0,0,0.4)',
   recordingPulse: '#E53E3E',
+
+  // --- New design-system tokens (additive only - see CLAUDE.md "Design
+  // System"). Existing keys above are untouched: `background` and `surface`
+  // are read by 60+ files across the app (including ChatScreen.js /
+  // ChatListScreen.js via `...shadow.md` spreads at module-load time), so
+  // repointing them would reskin/crash screens nothing here was meant to
+  // touch. `screenBackground` is the dedicated off-white token for the
+  // settings-style screens that opted into the new look. ---
+  primary: '#2C6BED',
+  primaryDark: '#1E55C4',
+  primaryLight: '#EEF3FD',
+  screenBackground: '#F2F3F5',
+  surfaceElevated: '#FFFFFF',
+  text: '#0A0A0A',
+  textTertiary: '#B0B0BF',
+  destructive: '#E53935',
+  destructiveDark: '#C62828',
+  destructiveLight: '#FFCDD2',
+  success: '#2ECC71',
+  toggleActive: '#2C6BED',
+  toggleInactive: '#D1D1D8',
+  sentBubble: '#2C6BED',
+  receivedBubble: '#FFFFFF',
+  sentText: '#FFFFFF',
+  receivedText: '#0A0A0A',
 };
 
 export const spacing = {
@@ -61,6 +86,25 @@ export const typography = {
   rowPreview: { fontSize: 14, fontWeight: '400' },
   timestamp: { fontSize: 12, fontWeight: '400' },
   bubbleText: { fontSize: 15, fontWeight: '400' },
+
+  // New design-system scale (additive - see CLAUDE.md "Design System").
+  title: { fontSize: 18, fontWeight: '700' },
+  heading: { fontSize: 17, fontWeight: '600' },
+  body: { fontSize: 15, fontWeight: '400' },
+  bodyMedium: { fontSize: 15, fontWeight: '500' },
+  secondary: { fontSize: 13, fontWeight: '400' },
+  caption: { fontSize: 11, fontWeight: '400' },
+};
+
+// New design-system radius scale (additive - kept separate from `radii`
+// above, which 30+ files already depend on with different values/keys).
+// WaveButton.js and any new code should use this one.
+export const radius = {
+  sm: 8,
+  md: 12,
+  lg: 16,
+  pill: 999,
+  card: 16,
 };
 
 export const shadow = {
@@ -79,3 +123,8 @@ export const shadow = {
     elevation: 4,
   },
 };
+
+// Default export (additive - nothing in the app used this before; every
+// existing import is a named import, e.g. `import { colors } from '../theme'`,
+// so adding this doesn't change any of those).
+export default { colors, typography, spacing, radii, radius, shadow };

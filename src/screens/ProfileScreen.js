@@ -6,6 +6,8 @@ import {
 import { colors, spacing, radii, shadow } from '../theme';
 import { Ionicons } from '@expo/vector-icons';
 import ImageViewerModal from '../components/ImageViewerModal';
+import ConfirmModal from '../components/ConfirmModal';
+import WaveButton from '../components/WaveButton';
 import QRCode from 'react-native-qrcode-svg';
 
 const MONO = Platform.OS === 'ios' ? 'Courier New' : 'monospace';
@@ -14,6 +16,9 @@ export default function ProfileScreen({ token, currentUser, onBack, onLogout, on
   const [uploading, setUploading] = useState(false);
   const [viewerOpen, setViewerOpen] = useState(false);
   const [qrOpen, setQrOpen] = useState(false);
+  const [modal, setModal] = useState({ visible: false });
+  const showModal = (config) => setModal({ visible: true, ...config });
+  const hideModal = () => setModal({ visible: false });
 
   // Displayed picture comes straight from currentUser: App.js owns the picker
   // + upload and pushes the new data URI down through that prop.
@@ -139,9 +144,20 @@ export default function ProfileScreen({ token, currentUser, onBack, onLogout, on
         </TouchableOpacity>
       </View>
 
-      <TouchableOpacity style={styles.logoutButton} onPress={onLogout} activeOpacity={0.8}>
-        <Text style={styles.logoutText}>Log out</Text>
-      </TouchableOpacity>
+      <View style={styles.logoutButtonWrap}>
+        <WaveButton
+          variant="destructive"
+          label="Log out"
+          fullWidth
+          onPress={() => showModal({
+            variant: 'warning',
+            title: 'Log out',
+            body: 'You will be signed out of Wave on this device.',
+            confirmLabel: 'Log out',
+            onConfirm: onLogout,
+          })}
+        />
+      </View>
 
       <ImageViewerModal
         visible={viewerOpen && !!picture}
@@ -189,12 +205,23 @@ export default function ProfileScreen({ token, currentUser, onBack, onLogout, on
           </TouchableOpacity>
         </ScrollView>
       </Modal>
+
+      <ConfirmModal
+        visible={modal.visible}
+        variant={modal.variant}
+        title={modal.title}
+        body={modal.body}
+        confirmLabel={modal.confirmLabel}
+        cancelLabel={modal.cancelLabel}
+        onConfirm={() => { hideModal(); modal.onConfirm?.(); }}
+        onCancel={hideModal}
+      />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
+  container: { flex: 1, backgroundColor: colors.screenBackground },
   header: {
     flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.lg,
     paddingTop: 50, paddingBottom: spacing.md,
@@ -229,12 +256,7 @@ const styles = StyleSheet.create({
   menuIcon: { marginRight: spacing.md },
   menuLabel: { flex: 1, fontSize: 15, color: colors.textPrimary },
 
-  logoutButton: {
-    marginTop: spacing.xl, marginHorizontal: spacing.lg,
-    backgroundColor: colors.background, borderWidth: 1, borderColor: colors.danger,
-    borderRadius: radii.sm, padding: spacing.md, alignItems: 'center'
-  },
-  logoutText: { color: colors.danger, fontSize: 16, fontWeight: '600' },
+  logoutButtonWrap: { marginTop: spacing.xl, marginHorizontal: spacing.lg },
 
   // --- My QR Code modal ---
   qrScreen: { flex: 1, backgroundColor: colors.background },

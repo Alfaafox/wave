@@ -8,10 +8,10 @@
 
 import React, { useEffect, useState, useCallback } from 'react';
 import {
-  View, Text, FlatList, TouchableOpacity, StyleSheet, Alert, RefreshControl, ActivityIndicator,
+  View, Text, FlatList, TouchableOpacity, StyleSheet, Alert, Modal, RefreshControl, ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { colors, spacing } from '../theme';
+import { colors, spacing, radii, shadow } from '../theme';
 import { connectSocket } from '../utils/socket';
 import { getArchivedConversations, unarchiveConversation } from '../utils/api';
 import ConversationRow from '../components/ConversationRow';
@@ -20,6 +20,7 @@ export default function ArchivedChatsScreen({ token, presenceMap, onBack, onOpen
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [rowMenuFor, setRowMenuFor] = useState(null);
 
   const load = useCallback(async () => {
     try {
@@ -74,12 +75,14 @@ export default function ArchivedChatsScreen({ token, presenceMap, onBack, onOpen
     }
   };
 
-  const handleLongPress = (item) => {
-    const title = item.is_group ? item.name : item.with?.name;
-    Alert.alert(title || 'Chat', undefined, [
-      { text: 'Unarchive', onPress: () => handleUnarchive(item) },
-      { text: 'Cancel', style: 'cancel' },
-    ]);
+  const handleLongPress = (item) => setRowMenuFor(item);
+
+  const closeRowMenu = () => setRowMenuFor(null);
+
+  const rowMenuUnarchive = () => {
+    const item = rowMenuFor;
+    closeRowMenu();
+    if (item) handleUnarchive(item);
   };
 
   return (
@@ -119,6 +122,20 @@ export default function ArchivedChatsScreen({ token, presenceMap, onBack, onOpen
           )}
         />
       )}
+
+      <Modal visible={!!rowMenuFor} transparent animationType="fade" onRequestClose={closeRowMenu}>
+        <TouchableOpacity style={styles.menuOverlay} activeOpacity={1} onPress={closeRowMenu}>
+          <View style={styles.menuSheet}>
+            <Text style={styles.menuTitle} numberOfLines={1}>
+              {rowMenuFor?.is_group ? rowMenuFor?.name : rowMenuFor?.with?.name}
+            </Text>
+            <TouchableOpacity style={styles.menuItem} onPress={rowMenuUnarchive}>
+              <Ionicons name="archive-outline" size={18} color={colors.textPrimary} style={{ marginRight: spacing.md }} />
+              <Text style={styles.menuItemText}>Unarchive</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
     </View>
   );
 }
@@ -136,4 +153,16 @@ const styles = StyleSheet.create({
 
   emptyWrap: { alignItems: 'center', justifyContent: 'center', paddingTop: 100 },
   emptyText: { fontSize: 15, color: colors.textMuted, marginTop: spacing.md },
+
+  menuOverlay: { flex: 1, backgroundColor: colors.overlay, justifyContent: 'flex-end' },
+  menuSheet: {
+    backgroundColor: colors.background, margin: spacing.lg, marginBottom: 100,
+    borderRadius: radii.md, paddingVertical: spacing.sm, ...shadow.md,
+  },
+  menuTitle: {
+    fontSize: 13, fontWeight: '600', color: colors.textMuted,
+    paddingHorizontal: spacing.lg, paddingTop: spacing.md, paddingBottom: spacing.xs,
+  },
+  menuItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14, paddingHorizontal: spacing.lg },
+  menuItemText: { fontSize: 16, color: colors.textPrimary, fontWeight: '500' },
 });

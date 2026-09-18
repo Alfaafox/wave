@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { getStatusFeed } from '../utils/api';
+import EmptyState from '../components/EmptyState';
 import { colors, spacing, radii, typography, shadow } from '../theme';
 
 const AVATAR_SIZE = 52;
@@ -196,11 +197,11 @@ export default function UpdatesScreen({ currentUser, token, onCreateStatus, onVi
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={colors.accent} />}
           ListHeaderComponent={myStatusSection}
           ListEmptyComponent={
-            <View style={styles.emptyState}>
-              <Ionicons name="radio-button-off-outline" size={48} color={colors.textMuted} />
-              <Text style={styles.emptyTitle}>No updates yet</Text>
-              <Text style={styles.emptySubtitle}>Updates from your contacts will appear here.</Text>
-            </View>
+            <EmptyState
+              icon="status"
+              title="No updates yet"
+              body="When your contacts post status updates, they will appear here"
+            />
           }
           renderItem={({ item }) => {
             const latest = item.statuses[0];

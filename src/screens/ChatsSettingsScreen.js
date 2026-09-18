@@ -4,6 +4,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as MediaLibrary from 'expo-media-library/legacy';
 import { Ionicons } from '@expo/vector-icons';
 import SettingsSubScreenLayout, { ComingSoonPlaceholder } from '../components/SettingsSubScreenLayout';
+import ConfirmModal from '../components/ConfirmModal';
 import { colors, spacing, radii, shadow } from '../theme';
 import { WALLPAPER_STORAGE_KEY, AUTOSAVE_STORAGE_KEY, WALLPAPER_OPTIONS } from '../utils/chatPreferences';
 
@@ -11,6 +12,9 @@ export default function ChatsSettingsScreen({ onBack }) {
   const [loading, setLoading] = useState(true);
   const [wallpaperId, setWallpaperId] = useState('default');
   const [autoSave, setAutoSave] = useState(false);
+  const [modal, setModal] = useState({ visible: false });
+  const showModal = (config) => setModal({ visible: true, ...config });
+  const hideModal = () => setModal({ visible: false });
 
   useEffect(() => {
     (async () => {
@@ -36,7 +40,12 @@ export default function ChatsSettingsScreen({ onBack }) {
     if (value) {
       const perm = await MediaLibrary.requestPermissionsAsync();
       if (!perm.granted) {
-        Alert.alert('Permission needed', 'We need access to your photo library to auto-save images.');
+        showModal({
+          variant: 'info',
+          title: 'Permission required',
+          body: 'To auto-save photos, allow Wave to access your photo library in Settings.',
+          confirmLabel: 'OK',
+        });
         return;
       }
     }
@@ -46,14 +55,14 @@ export default function ChatsSettingsScreen({ onBack }) {
 
   if (loading) {
     return (
-      <SettingsSubScreenLayout title="Chats" onBack={onBack}>
+      <SettingsSubScreenLayout title="Chats" onBack={onBack} backgroundColor={colors.screenBackground}>
         <ActivityIndicator color={colors.accent} style={{ marginTop: spacing.xxl }} />
       </SettingsSubScreenLayout>
     );
   }
 
   return (
-    <SettingsSubScreenLayout title="Chats" onBack={onBack}>
+    <SettingsSubScreenLayout title="Chats" onBack={onBack} backgroundColor={colors.screenBackground}>
       <Text style={styles.sectionLabel}>Chat Wallpaper</Text>
       <View style={styles.card}>
         <Text style={styles.hint}>Applies to every chat on this device.</Text>
@@ -88,7 +97,13 @@ export default function ChatsSettingsScreen({ onBack }) {
             <Text style={styles.toggleLabel}>Auto-save received photos</Text>
             <Text style={styles.toggleHint}>Automatically save photos people send you to your gallery.</Text>
           </View>
-          <Switch value={autoSave} onValueChange={toggleAutoSave} trackColor={{ false: colors.border, true: colors.accent }} />
+          <Switch
+            value={autoSave}
+            onValueChange={toggleAutoSave}
+            trackColor={{ false: colors.toggleInactive, true: colors.toggleActive }}
+            thumbColor={colors.surfaceElevated}
+            ios_backgroundColor={colors.toggleInactive}
+          />
         </View>
       </View>
 
@@ -96,6 +111,17 @@ export default function ChatsSettingsScreen({ onBack }) {
       <View style={styles.card}>
         <ComingSoonPlaceholder text="Font size, archived chats, and exporting a specific chat (found inside that chat's own menu) are coming next." />
       </View>
+
+      <ConfirmModal
+        visible={modal.visible}
+        variant={modal.variant}
+        title={modal.title}
+        body={modal.body}
+        confirmLabel={modal.confirmLabel}
+        cancelLabel={modal.cancelLabel}
+        onConfirm={() => { hideModal(); modal.onConfirm?.(); }}
+        onCancel={hideModal}
+      />
     </SettingsSubScreenLayout>
   );
 }

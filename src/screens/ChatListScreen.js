@@ -12,16 +12,21 @@ import { connectSocket } from '../utils/socket';
 import { colors, spacing, radii, typography, shadow } from '../theme';
 import ContactPickerScreen from './ContactPickerScreen';
 import ConversationRow from '../components/ConversationRow';
+import EmptyState from '../components/EmptyState';
+import ConfirmModal from '../components/ConfirmModal';
 import { Ionicons } from '@expo/vector-icons';
 import { getFavourites } from '../utils/favourites';
 
 export default function ChatListScreen({ token, currentUser, presenceMap, onOpenChat, onLogout, onOpenProfile, onOpenStarred, onOpenArchived, onOpenScheduled }) {
   const [conversations, setConversations] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [starting, setStarting] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [composeOpen, setComposeOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [rowMenuFor, setRowMenuFor] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
 
   const [pickerMode, setPickerMode] = useState(null);
   const [groupNamingFor, setGroupNamingFor] = useState(null);
@@ -61,6 +66,8 @@ export default function ChatListScreen({ token, currentUser, presenceMap, onOpen
       setConversations(data);
     } catch (err) {
       Alert.alert('Error', err.message);
+    } finally {
+      setLoading(false);
     }
   }, [token]);
 
@@ -130,13 +137,20 @@ export default function ChatListScreen({ token, currentUser, presenceMap, onOpen
     }
   };
 
-  const handleRowLongPress = (item) => {
-    const title = item.is_group ? item.name : item.with?.name;
-    Alert.alert(title || 'Chat', undefined, [
-      { text: 'Archive', onPress: () => handleArchive(item) },
-      { text: 'Delete chat', style: 'destructive', onPress: () => handleDeleteChat(item) },
-      { text: 'Cancel', style: 'cancel' },
-    ]);
+  const handleRowLongPress = (item) => setRowMenuFor(item);
+
+  const closeRowMenu = () => setRowMenuFor(null);
+
+  const rowMenuArchive = () => {
+    const item = rowMenuFor;
+    closeRowMenu();
+    if (item) handleArchive(item);
+  };
+
+  const rowMenuDelete = () => {
+    const item = rowMenuFor;
+    closeRowMenu();
+    if (item) setDeleteTarget(item);
   };
 
   // Header overflow menu. New Group and Settings reuse the exact handlers the
@@ -223,27 +237,16 @@ export default function ChatListScreen({ token, currentUser, presenceMap, onOpen
     }
   };
 
-  const handleDeleteChat = (item) => {
-    const title = item.is_group ? item.name : item.with?.name;
-    Alert.alert(
-      'Delete chat',
-      `Remove this chat with ${title}? This only deletes it for you.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await deleteConversation(token, item.id);
-              await loadConversations();
-            } catch (err) {
-              Alert.alert('Could not delete chat', err.message);
-            }
-          }
-        }
-      ]
-    );
+  const confirmDeleteChat = async () => {
+    const item = deleteTarget;
+    setDeleteTarget(null);
+    if (!item) return;
+    try {
+      await deleteConversation(token, item.id);
+      await loadConversations();
+    } catch (err) {
+      Alert.alert('Could not delete chat', err.message);
+    }
   };
 
   const filteredConversations = useMemo(() => {
@@ -355,9 +358,11 @@ export default function ChatListScreen({ token, currentUser, presenceMap, onOpen
         keyExtractor={(item) => String(item.id)}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={colors.accent} />}
         ListEmptyComponent={
-          <Text style={styles.empty}>
-            {searchQuery ? 'No chats match your search' : 'No chats yet. Tap + to start one.'}
-          </Text>
+          loading ? null : searchQuery ? (
+            <EmptyState icon="search" title="No results found" body="Try a different name or keyword" />
+          ) : (
+            <EmptyState icon="chat" title="No conversations yet" body="Tap the button below to start a chat or create a group" />
+          )
         }
         ListHeaderComponent={
           !searchQuery && archivedCount > 0 ? (
@@ -436,6 +441,34 @@ export default function ChatListScreen({ token, currentUser, presenceMap, onOpen
           </View>
         </TouchableOpacity>
       </Modal>
+
+      <Modal visible={!!rowMenuFor} transparent animationType="fade" onRequestClose={closeRowMenu}>
+        <TouchableOpacity style={styles.composeOverlay} activeOpacity={1} onPress={closeRowMenu}>
+          <View style={styles.composeSheet}>
+            <Text style={styles.rowMenuTitle} numberOfLines={1}>
+              {rowMenuFor?.is_group ? rowMenuFor?.name : rowMenuFor?.with?.name}
+            </Text>
+            <TouchableOpacity style={styles.composeItem} onPress={rowMenuArchive}>
+              <Ionicons name="archive-outline" size={18} color={colors.textPrimary} style={{ marginRight: spacing.md }} />
+              <Text style={styles.composeText}>Archive</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.composeItem} onPress={rowMenuDelete}>
+              <Ionicons name="trash-outline" size={18} color={colors.danger} style={{ marginRight: spacing.md }} />
+              <Text style={[styles.composeText, { color: colors.danger }]}>Delete chat</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      <ConfirmModal
+        visible={!!deleteTarget}
+        variant="destructive"
+        title="Delete chat"
+        body={`Remove this chat with ${deleteTarget?.is_group ? deleteTarget?.name : deleteTarget?.with?.name}? This only deletes it for you.`}
+        confirmLabel="Delete"
+        onConfirm={confirmDeleteChat}
+        onCancel={() => setDeleteTarget(null)}
+      />
 
       <Modal visible={!!groupNamingFor} transparent animationType="slide" onRequestClose={() => setGroupNamingFor(null)}>
         <View style={styles.modalOverlay}>
@@ -549,6 +582,10 @@ const styles = StyleSheet.create({
   },
   composeItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14, paddingHorizontal: spacing.lg },
   composeText: { fontSize: 16, color: colors.textPrimary, fontWeight: '500' },
+  rowMenuTitle: {
+    fontSize: 13, fontWeight: '600', color: colors.textMuted,
+    paddingHorizontal: spacing.lg, paddingTop: spacing.md, paddingBottom: spacing.xs,
+  },
 
   modalOverlay: { flex: 1, backgroundColor: colors.overlay, justifyContent: 'flex-end' },
   modalBox: {
