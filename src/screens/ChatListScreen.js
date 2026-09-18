@@ -6,7 +6,7 @@ import {
 import {
   getConversations, startConversation, createGroup, deleteConversation,
   markAllConversationsRead, archiveConversation, getArchivedConversations,
-  getStatusFeed,
+  getStatusFeed, setConversationMute,
 } from '../utils/api';
 import { connectSocket } from '../utils/socket';
 import { colors, spacing, radii, typography, shadow } from '../theme';
@@ -14,6 +14,7 @@ import ContactPickerScreen from './ContactPickerScreen';
 import ConversationRow from '../components/ConversationRow';
 import EmptyState from '../components/EmptyState';
 import ConfirmModal from '../components/ConfirmModal';
+import UserProfileModal from '../components/UserProfileModal';
 import { Ionicons } from '@expo/vector-icons';
 import { getFavourites } from '../utils/favourites';
 
@@ -39,6 +40,28 @@ export default function ChatListScreen({ token, currentUser, presenceMap, onOpen
   // viewedStatusUserIds (grey ring), or in neither (no ring).
   const [unviewedStatusUserIds, setUnviewedStatusUserIds] = useState(() => new Set());
   const [viewedStatusUserIds, setViewedStatusUserIds] = useState(() => new Set());
+
+  // Avatar tap opens a quick UserProfileModal for that row's other user,
+  // separate from tapping the rest of the row (which opens the chat) - see
+  // ConversationRow.js's onAvatarPress. 1:1 only; groups no-op (no
+  // GroupInfoScreen reachable from this screen). `rowMuted`/`rowPrivateChat`
+  // mirror the lifted state ChatScreen keeps for the same modal, trimmed
+  // down since this screen has no per-conversation session to lift them
+  // into - they just live for as long as the modal is open.
+  const [profileModalConv, setProfileModalConv] = useState(null);
+  const [rowMuted, setRowMuted] = useState(false);
+  const [rowPrivateChat, setRowPrivateChat] = useState(false);
+
+  const handleRowMuteChange = async (value, opts = {}) => {
+    setRowMuted(value);
+    if (opts.skipSync || !profileModalConv) return;
+    try {
+      await setConversationMute(token, profileModalConv.id, value);
+    } catch (err) {
+      setRowMuted(!value);
+      Alert.alert('Could not update', 'Check your connection and try again.');
+    }
+  };
 
   const loadFavourites = useCallback(() => {
     getFavourites().then(setFavouriteIds).catch(() => {});
@@ -388,6 +411,14 @@ export default function ChatListScreen({ token, currentUser, presenceMap, onOpen
               groupName: item.name,
             })}
             onLongPress={() => handleRowLongPress(item)}
+            onAvatarPress={() => {
+              // Groups don't have a single-user profile modal, and this
+              // screen has no way to reach GroupInfoScreen - no-op.
+              if (item.is_group) return;
+              setRowMuted(false);
+              setRowPrivateChat(!!item.private_chat);
+              setProfileModalConv(item);
+            }}
           />
         )}
       />
@@ -495,6 +526,23 @@ export default function ChatListScreen({ token, currentUser, presenceMap, onOpen
           </View>
         </View>
       </Modal>
+
+      <UserProfileModal
+        visible={!!profileModalConv}
+        onClose={() => setProfileModalConv(null)}
+        token={token}
+        currentUser={currentUser}
+        isGroup={false}
+        groupName={null}
+        conversationId={profileModalConv?.id}
+        otherUser={profileModalConv?.with}
+        onlineUsers={presenceMap}
+        recentImages={[]}
+        muted={rowMuted}
+        onMuteChange={handleRowMuteChange}
+        privateChat={rowPrivateChat}
+        onPrivateChatChange={(enabled) => setRowPrivateChat(!!enabled)}
+      />
     </View>
   );
 }

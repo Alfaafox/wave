@@ -22,8 +22,9 @@ export function previewText(lastMessage) {
 // - see UpdatesScreen.js / ChatListScreen.js). Always reserves the same
 // outer box whether or not a ring is drawn, so rows don't jitter depending
 // on which contacts happen to have an active status. Purely decorative -
-// tapping the avatar still just opens the chat (onPress on the whole row,
-// unchanged); status is only ever opened from the Updates tab.
+// the ring itself is never tappable; status is only ever opened from the
+// Updates tab. The avatar underneath it has its own onPress (see
+// onAvatarPress below), separate from the row's.
 const AVATAR_SIZE = 52;
 const RING_GAP = 3;
 const RING_BORDER = 2.5;
@@ -45,7 +46,7 @@ function AvatarStatusRing({ variant, children }) {
   );
 }
 
-export default function ConversationRow({ item, presenceMap, unviewedStatusUserIds, viewedStatusUserIds, onPress, onLongPress }) {
+export default function ConversationRow({ item, presenceMap, unviewedStatusUserIds, viewedStatusUserIds, onPress, onLongPress, onAvatarPress }) {
   const isGroup = !!item.is_group;
   const title = isGroup ? item.name : item.with?.name;
   const online = !isGroup && item.with?.id != null && !!presenceMap?.get?.(item.with.id)?.online;
@@ -67,16 +68,26 @@ export default function ConversationRow({ item, presenceMap, unviewedStatusUserI
       onLongPress={onLongPress}
     >
       <AvatarStatusRing variant={statusVariant}>
-        <View>
-          {avatarUri ? (
-            <Image source={{ uri: avatarUri }} style={styles.avatar} resizeMode="cover" />
-          ) : (
-            <View style={styles.avatar}>
-              <Text style={styles.avatarText}>{(title || '?').charAt(0).toUpperCase()}</Text>
-            </View>
-          )}
-          {online && <View style={styles.onlineDot} />}
-        </View>
+        <TouchableOpacity
+          activeOpacity={0.6}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          onPress={(e) => {
+            e?.stopPropagation?.();
+            if (onAvatarPress) onAvatarPress();
+            else onPress?.();
+          }}
+        >
+          <View>
+            {avatarUri ? (
+              <Image source={{ uri: avatarUri }} style={styles.avatar} resizeMode="cover" />
+            ) : (
+              <View style={styles.avatar}>
+                <Text style={styles.avatarText}>{(title || '?').charAt(0).toUpperCase()}</Text>
+              </View>
+            )}
+            {online && <View style={styles.onlineDot} />}
+          </View>
+        </TouchableOpacity>
       </AvatarStatusRing>
       <View style={{ flex: 1, marginLeft: spacing.md }}>
         <View style={styles.rowTopLine}>

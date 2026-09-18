@@ -169,6 +169,39 @@ function formatDateSeparator(raw) {
   return d.getFullYear() === now.getFullYear() ? base : `${base} ${d.getFullYear()}`;
 }
 
+// Chat header "last seen" subtitle. Same day-bucketing approach as
+// formatDateSeparator above (parseTs for the UTC-safe parse, toDateKey +
+// startOfDay/diffDays for the day comparison), just phrased for a header
+// line instead of a list divider:
+//   today -> "last seen today at 9:20 PM"
+//   yesterday -> "last seen yesterday at 9:20 PM"
+//   last 6 days -> "last seen Monday at 9:20 PM"
+//   older -> "last seen 12 Sep at 9:20 PM"
+//   unparseable/missing -> "last seen recently"
+// Time-of-day formatting matches the existing convention used for message
+// bubble timestamps elsewhere in this file (toLocaleTimeString with
+// hour/minute, 2-digit) - not hardcoded lowercase am/pm.
+function formatLastSeen(raw) {
+  if (!raw) return 'last seen recently';
+  const d = parseTs(raw);
+  if (Number.isNaN(d.getTime())) return 'last seen recently';
+
+  const timeStr = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const key = toDateKey(d);
+  if (key === toDateKey(new Date())) return `last seen today at ${timeStr}`;
+  if (key === toDateKey(new Date(Date.now() - 86400000))) return `last seen yesterday at ${timeStr}`;
+
+  const now = new Date();
+  const startOfDay = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diffDays = Math.round((startOfDay(now) - startOfDay(d)) / 86400000);
+  if (diffDays >= 2 && diffDays <= 6) {
+    return `last seen ${d.toLocaleDateString([], { weekday: 'long' })} at ${timeStr}`;
+  }
+
+  const month = d.toLocaleDateString([], { month: 'short' });
+  return `last seen ${d.getDate()} ${month} at ${timeStr}`;
+}
+
 // Pure: returns a new array with { type:'dateSeparator', date, id } objects
 // inserted wherever the calendar day changes between consecutive messages.
 // Keyed by the label ('sep_<label>') so it is stable across re-renders.
@@ -2449,7 +2482,11 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
   // Live presence for the other party (App.js owns `presenceMap`). Falls back
   // to the last-seen snapshot from GET /conversations. Both go null when the
   // other person has last-seen turned off (server suppresses the events and
-  // nulls `with.last_seen`), so this shows neither "online" nor a timestamp.
+  // nulls `with.last_seen`) - that privacy-off case is indistinguishable,
+  // from here, from a genuinely-unknown timestamp. formatLastSeen's null
+  // fallback ("last seen recently") now covers both, whereas this used to
+  // render nothing at all for either. Revisit if the privacy toggle should
+  // suppress the subtitle entirely instead.
   const presenceEntry = !isGroup && otherUser?.id != null ? presenceMap?.get(otherUser.id) : null;
   const isOnline = !!presenceEntry?.online;
   const lastSeenAt = presenceEntry?.lastSeen || otherUser?.last_seen || null;
@@ -2460,9 +2497,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
       ? 'typing...'
       : isOnline
       ? 'online'
-      : lastSeenAt
-      ? `last seen ${new Date(lastSeenAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
-      : '');
+      : formatLastSeen(lastSeenAt));
 
   const typingName = typing.name || (isGroup ? '' : otherUser?.name || '');
 
@@ -2695,7 +2730,14 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
               <Ionicons name="arrow-back" size={24} color={colors.textPrimary} />
             </TouchableOpacity>
             <TouchableOpacity
-              onPress={() => setProfileModalOpen(true)}
+              onPress={() => {
+                // A profile picture opens straight into the full-screen viewer
+                // (reusing the same ImageViewerModal instance as message
+                // images - see `viewerImage` below); no picture falls back to
+                // the profile modal, same as before.
+                if (!isGroup && headerAvatarUri) setViewerImage(headerAvatarUri);
+                else setProfileModalOpen(true);
+              }}
               disabled={isGroup ? false : !otherUser?.id}
               activeOpacity={0.6}
               style={styles.headerAvatarBtn}
@@ -2721,7 +2763,7 @@ export default function ChatScreen({ token, currentUser, conversationId, otherUs
                 <Text style={styles.headerTitle} numberOfLines={1}>{headerTitle}</Text>
               </View>
               {!!headerSubtitle && (
-                <Text style={[styles.headerSubtitle, isOnline && styles.headerSubtitleOnline]}>
+                <Text style={[styles.headerSubtitle, isOnline && styles.headerSubtitleOnline]} numberOfLines={1}>
                   {headerSubtitle}
                 </Text>
               )}
